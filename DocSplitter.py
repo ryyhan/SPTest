@@ -1,0 +1,220 @@
+import os
+from typing import List, Dict, Tuple
+import fitz
+import pytesseract
+from PIL import Image
+import re
+from collections import defaultdict
+
+class PDFSplitter:
+    def __init__(self):
+        # Dictionary mapping form types to their unique titles
+        self.form_identifiers = {
+            "W-8BEN": "Certificate of Foreign Status of Beneficial Owner for United States Tax Withholding and Reporting (Individuals)",
+            "W-8BEN-E": "Certificate of Status of Beneficial Owner for United States Tax Withholding and Reporting (Entities)",
+            "W-8EXP": "Certificate of Foreign Government or Other Foreign Organization for United States Tax Withholding and Reporting",
+            "W-8IMY": "Certificate of Foreign Intermediary, Foreign Flow-Through Entity, or Certain U.S. Branches for United States Tax Withholding and Reporting",
+            "W-9": "Request for Taxpayer Identification Number and Certification"
+        }
+        
+        # Pattern to identify certificates
+        self.certificate_pattern = re.compile(r'certificate', re.IGNORECASE)
+        
+    def clean_text(self, text: str) -> str:
+        """Clean and normalize text for comparison."""
+        # Remove extra whitespace and newlines
+        return ' '.join(text.replace('\n', ' ').split())
+
+    def extract_text_from_page(self, page) -> str:
+        """Extract text from a page using both native text extraction and OCR if needed."""
+        # Try native text extraction first
+        text = page.get_text()
+        
+        # If very little text is found (likely scanned or noise), try OCR
+        if len(text.strip()) < 50:
+            pix = page.get_pixmap()
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            text = pytesseract.image_to_string(img)
+            
+        return self.clean_text(text)
+
+    def identify_form_type(self, text: str) -> Tuple[str, bool]:
+        """
+        Identify the type of form based on text content.
+        Returns a tuple of (form_type, is_start_page).
+        """
+        # Check for form titles
+        # Sort by length of the key (form type) in descending order to avoid substring matches
+        # e.g. Check W-8BEN-E before W-8BEN
+        sorted_forms = sorted(self.form_identifiers.items(), key=lambda x: len(x[0]), reverse=True)
+        
+        for form_type, title in sorted_forms:
+            if title.lower() in text.lower():
+                print(f"DEBUG: Found title for {form_type}")
+                return (form_type, True)
+            elif f"form {form_type.lower()}" in text.lower():
+                print(f"DEBUG: Found 'Form {form_type}' fallback")
+                return (form_type, False)
+                
+        # Check for certificates
+        if self.certificate_pattern.search(text):
+            return ("CERTIFICATE", True)
+            
+        return ("OTHER", True)
+
+    def extract_page_number(self, text: str) -> int:
+        """Extract page number from text if present."""
+        # Look for "Page X" or "Page X of Y"
+        # Make regex stricter to avoid "see page 2"
+        # We look for "Page X" at the start of a line or after a newline, 
+        # or "Page X of Y"
+        # Also handle "Page: X"
+        
+        # Pattern 1: "Page 1 of 6"
+        match = re.search(r'page\s+(\d+)\s+of\s+\d+', text.lower())
+        if match:
+            return int(match.group(1))
+            
+        # Pattern 2: "Page 2" (try to avoid "see page 2")
+        # We check if it's a short line or at the end of text? 
+        # Hard to do without layout analysis.
+        # Let's try to match "Page X" where X is a number, but maybe not followed by text?
+        # Or just trust that "Page X" usually appears in headers/footers.
+        
+        # Let's try a slightly safer regex that looks for "Page X" surrounded by non-word chars
+        # or at end of string
+        matches = re.findall(r'page\s+(\d+)', text.lower())
+        if matches:
+            # If multiple matches, this is risky. 
+            # Usually the page number is the largest number? Or the one that matches sequence?
+            # For now, let's take the last one found (often footer)
+            return int(matches[-1])
+            
+        return None
+
+    def group_pages(self, pdf_document) -> List[Dict]:
+        """Group pages into separate documents."""
+        documents = []
+        current_doc = None
+        
+        for page_num in range(len(pdf_document)):
+            page = pdf_document[page_num]
+            text = self.extract_text_from_page(page)
+            form_type, is_start_page = self.identify_form_type(text)
+            page_num_in_doc = self.extract_page_number(text)
+            print(f"DEBUG: Page {page_num} -> Type: {form_type}, IsStart: {is_start_page}, PageNum: {page_num_in_doc}")
+            
+            # Determine if we should start a new document
+            start_new = False
+            
+            if current_doc is None:
+                start_new = True
+            elif is_start_page and form_type != "OTHER":
+                # PRIORITY 1: Explicit Title Found -> ALWAYS START NEW
+                # (User confirmed Page 1 has title)
+                start_new = True
+            elif page_num_in_doc is not None and page_num_in_doc > 1:
+                # PRIORITY 2: Page > 1 -> ALWAYS CONTINUE
+                # (Even if some other text looks like a form title, which is rare, 
+                # but this overrides "Form W-9" text on page 2)
+                start_new = False
+            elif page_num_in_doc == 1:
+                # PRIORITY 3: Explicit Page 1 -> START NEW
+                start_new = True
+            else:
+                # PRIORITY 4: Fallback (No Title, No Page Num, or Page Num ambiguous)
+                if form_type == current_doc['type']:
+                    # Same form type, no title -> Continuation
+                    start_new = False
+                elif form_type != "OTHER":
+                    # Different form type -> Split
+                    start_new = True
+                elif form_type == "OTHER":
+                    # Continuation
+                    start_new = False
+            
+            if start_new:
+                if current_doc is not None:
+                    documents.append(current_doc)
+                
+                # Create new document
+                doc_id = len([d for d in documents if d['type'] == form_type]) + 1
+                current_doc = {
+                    'type': form_type,
+                    'pages': [],
+                    'id': doc_id,
+                    'text': text  # Store first page text for naming certificates
+                }
+            
+            current_doc['pages'].append(page_num)
+            
+        # Add the last document
+        if current_doc is not None:
+            documents.append(current_doc)
+            
+        return documents
+
+    def generate_filename(self, doc: Dict) -> str:
+        """Generate appropriate filename for the document."""
+        if doc['type'] == "CERTIFICATE":
+            # Extract a meaningful name from the certificate text
+            # Find first instance of "certificate" and take surrounding words
+            text = doc['text'].lower()
+            cert_idx = text.find("certificate")
+            if cert_idx != -1:
+                # Take up to 5 words before and after "certificate"
+                words = text.split()
+                cert_word_idx = next(i for i, word in enumerate(words) if "certificate" in word.lower())
+                start_idx = max(0, cert_word_idx - 5)
+                end_idx = min(len(words), cert_word_idx + 6)
+                cert_name = "_".join(words[start_idx:end_idx])
+                # Clean the filename
+                cert_name = re.sub(r'[^\w\-_.]', '_', cert_name)
+                return f"certificate_{doc['id']}_{cert_name[:50]}.pdf"
+        elif doc['type'] == "OTHER":
+            return f"other_document_{doc['id']}.pdf"
+        else:
+            return f"{doc['type'].lower()}_{doc['id']}.pdf"
+
+    def split_pdf(self, input_path: str, output_dir: str) -> List[Dict]:
+        """Split PDF into separate files based on form types."""
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Open the PDF
+        pdf_document = fitz.open(input_path)
+        
+        # Group pages into separate documents
+        documents = self.group_pages(pdf_document)
+        
+        # Create separate PDFs for each document
+        for doc in documents:
+            new_pdf = fitz.open()
+            for page_num in doc['pages']:
+                new_pdf.insert_pdf(pdf_document, from_page=page_num, to_page=page_num)
+            
+            output_filename = self.generate_filename(doc)
+            output_path = os.path.join(output_dir, output_filename)
+            new_pdf.save(output_path)
+            new_pdf.close()
+        
+        pdf_document.close()
+        return documents
+
+def main():
+    splitter = PDFSplitter()
+    input_pdf = "form-form-image-other-image.pdf"
+    output_directory = "split_forms"
+    
+    try:
+        result = splitter.split_pdf(input_pdf, output_directory)
+        
+        # Print summary
+        print("\nPDF splitting complete! Summary:")
+        for doc in result:
+            print(f"{doc['type']} (ID: {doc['id']}): {len(doc['pages'])} page(s)")
+            
+    except Exception as e:
+        print(f"Error processing PDF: {str(e)}")
+
+if __name__ == "__main__":
+    main()
