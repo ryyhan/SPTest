@@ -20,6 +20,15 @@ class PDFSplitter:
         # Pattern to identify certificates
         self.certificate_pattern = re.compile(r'certificate', re.IGNORECASE)
         
+        # Strict page count rules
+        self.form_rules = {
+            "W-9": [1, 6],
+            "W-8BEN": [1],
+            "W-8BEN-E": [8],
+            "W-8EXP": [3],
+            "W-8IMY": [8]
+        }
+        
     def clean_text(self, text: str) -> str:
         """Clean and normalize text for comparison."""
         # Remove extra whitespace and newlines
@@ -109,29 +118,67 @@ class PDFSplitter:
             
             if current_doc is None:
                 start_new = True
-            elif is_start_page and form_type != "OTHER":
-                # PRIORITY 1: Explicit Title Found -> ALWAYS START NEW
-                # (User confirmed Page 1 has title)
-                start_new = True
-            elif page_num_in_doc is not None and page_num_in_doc > 1:
-                # PRIORITY 2: Page > 1 -> ALWAYS CONTINUE
-                # (Even if some other text looks like a form title, which is rare, 
-                # but this overrides "Form W-9" text on page 2)
-                start_new = False
-            elif page_num_in_doc == 1:
-                # PRIORITY 3: Explicit Page 1 -> START NEW
-                start_new = True
             else:
-                # PRIORITY 4: Fallback (No Title, No Page Num, or Page Num ambiguous)
-                if form_type == current_doc['type']:
-                    # Same form type, no title -> Continuation
-                    start_new = False
-                elif form_type != "OTHER":
-                    # Different form type -> Split
+                # Check strict page count rules
+                current_type = current_doc['type']
+                current_len = len(current_doc['pages'])
+                
+                # Default behavior (Priority Logic)
+                if is_start_page and form_type != "OTHER":
+                    # PRIORITY 1: Explicit Title Found -> START NEW
                     start_new = True
-                elif form_type == "OTHER":
-                    # Continuation
+                elif page_num_in_doc is not None and page_num_in_doc > 1:
+                    # PRIORITY 2: Page > 1 -> CONTINUE
                     start_new = False
+                elif page_num_in_doc == 1:
+                    # PRIORITY 3: Explicit Page 1 -> START NEW
+                    start_new = True
+                else:
+                    # PRIORITY 4: Fallback
+                    if form_type == current_type:
+                         # Same type, no title -> Continuation
+                         start_new = False
+                    elif form_type != "OTHER":
+                        # Different type -> Split
+                        start_new = True
+                    else:
+                        # OTHER -> Continuation
+                        start_new = False
+
+                # OVERRIDE WITH STRICT PAGE COUNTS
+                if current_type in self.form_rules:
+                    allowed_counts = self.form_rules[current_type]
+                    max_count = max(allowed_counts)
+                    
+                    if current_len < max_count:
+                        # We haven't reached the max length yet.
+                        # BUT, if we are at a valid stopping point (e.g. W-9 page 1), 
+                        # we need to be careful.
+                        
+                        if current_len in allowed_counts:
+                            # We are at a valid length (e.g. W-9 Page 1).
+                            # If the standard logic said "Start New" (e.g. found new title), we allow it.
+                            # If standard logic said "Continue" (e.g. Page 2), we allow it.
+                            pass 
+                        else:
+                            # We are NOT at a valid length (e.g. W-8BEN-E Page 3).
+                            # We MUST continue, UNLESS we see a totally different form title 
+                            # (which would mean the file is malformed/mixed up, but we should trust the title).
+                            # However, user said "W-8BEN-E will have 8 pages".
+                            # So we should bias heavily towards continuation.
+                            
+                            if start_new and (is_start_page and form_type != "OTHER"):
+                                # We found a NEW form title. This contradicts the page count rule.
+                                # E.g. We are on Page 3 of W-8BEN-E, but found "Form W-9".
+                                # We should probably respect the Title (file might be truncated).
+                                pass
+                            else:
+                                # Otherwise, force continuation
+                                start_new = False
+                    
+                    elif current_len >= max_count:
+                        # We reached max length. Force split for next page.
+                        start_new = True
             
             if start_new:
                 if current_doc is not None:
