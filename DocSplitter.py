@@ -10,11 +10,11 @@ class PDFSplitter:
     def __init__(self):
         # Dictionary mapping form types to their unique titles
         self.form_identifiers = {
-            "W-8BEN": "Certificate of Foreign Status of Beneficial Owner for United States Tax Withholding and Reporting (Individuals)",
-            "W-8BEN-E": "Certificate of Status of Beneficial Owner for United States Tax Withholding and Reporting (Entities)",
-            "W-8EXP": "Certificate of Foreign Government or Other Foreign Organization for United States Tax Withholding and Reporting",
-            "W-8IMY": "Certificate of Foreign Intermediary, Foreign Flow-Through Entity, or Certain U.S. Branches for United States Tax Withholding and Reporting",
-            "W-9": "Request for Taxpayer Identification Number and Certification"
+            "W-8BEN": "Certificate of Foreign Status of Beneficial Owner",
+            "W-8BEN-E": "Certificate of Status of Beneficial Owner",
+            "W-8EXP": "Certificate of Foreign Government",
+            "W-8IMY": "Certificate of Foreign Intermediary",
+            "W-9": "Request for Taxpayer Identification Number"
         }
         
         # Pattern to identify certificates
@@ -57,11 +57,16 @@ class PDFSplitter:
         # e.g. Check W-8BEN-E before W-8BEN
         sorted_forms = sorted(self.form_identifiers.items(), key=lambda x: len(x[0]), reverse=True)
         
+        # First pass: Check for explicit titles (Strong match)
         for form_type, title in sorted_forms:
             if title.lower() in text.lower():
                 print(f"DEBUG: Found title for {form_type}")
                 return (form_type, True)
-            elif f"form {form_type.lower()}" in text.lower():
+                
+        # Second pass: Check for 'Form X' fallbacks (Weak match)
+        # We limit check to first 1000 chars to avoid matching instructions
+        for form_type, _ in sorted_forms:
+            if f"form {form_type.lower()}" in text[:1000].lower():
                 print(f"DEBUG: Found 'Form {form_type}' fallback")
                 return (form_type, False)
                 
@@ -249,7 +254,7 @@ class PDFSplitter:
 
 def main():
     splitter = PDFSplitter()
-    input_pdf = "form-form-image-other-image.pdf"
+    input_pdf = "ooo.pdf"
     output_directory = "split_forms"
     
     try:
