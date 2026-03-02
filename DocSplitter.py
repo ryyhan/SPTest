@@ -89,9 +89,16 @@ class PDFSplitter:
         # Second pass: Check for 'Form X' fallbacks (Weak match)
         # We limit check to first 1000 chars to avoid matching instructions
         for form_type, _ in sorted_forms:
-            if f"form {form_type.lower()}" in text[:1000].lower():
+            # Handle forms where "Form" and the form type might have varying spacing/newlines
+            form_type_clean = form_type.lower()
+            if f"form {form_type_clean}" in text[:1000].lower() or f"form\n{form_type_clean}" in text[:1000].lower():
                 print(f"DEBUG: Found 'Form {form_type}' fallback")
                 return (form_type, False)
+            
+            # Special fallback for W-9, which is often extracted with weird spacing like "Form W - 9" or just "W-9"
+            if form_type == "W-9" and re.search(r'\bw-?9\b', text[:1000].lower()):
+                print(f"DEBUG: Found 'W-9' fallback via regex")
+                return ("W-9", False)
                 
         # Check for certificates
         if self.certificate_pattern.search(text):
@@ -112,17 +119,14 @@ class PDFSplitter:
         if match:
             return int(match.group(1))
             
-        # Pattern 2: "Page 2" (try to avoid "see page 2")
-        # We check if it's a short line or at the end of text? 
-        # Hard to do without layout analysis.
-        # Let's try to match "Page X" where X is a number, but maybe not followed by text?
-        # Or just trust that "Page X" usually appears in headers/footers.
-        
-        # Let's try a slightly safer regex that looks for "Page X" surrounded by non-word chars
-        # or at end of string
+        # Pattern 3: W-9 specific footer like "Form W-9 (Rev. 10-2018) Page X"
+        match = re.search(r'form w-9.*?page\s+(\d+)', text.lower())
+        if match:
+            return int(match.group(1))
+            
+        # Let's try to match "Page X" at the beginning of a line or end
         matches = re.findall(r'page\s+(\d+)', text.lower())
         if matches:
-            # If multiple matches, this is risky. 
             # Usually the page number is the largest number? Or the one that matches sequence?
             # For now, let's take the last one found (often footer)
             return int(matches[-1])
