@@ -72,33 +72,48 @@ class PDFSplitter:
 
     def identify_form_type(self, text: str) -> Tuple[str, bool]:
         """
-        Identify the type of form based on text content.
+        Identify the type of form based on text content using flexible regex.
         Returns a tuple of (form_type, is_start_page).
         """
-        # Check for form titles
-        # Sort by length of the key (form type) in descending order to avoid substring matches
-        # e.g. Check W-8BEN-E before W-8BEN
+        # Dictionary of regex patterns for titles
+        title_patterns = {
+            "W-8BEN": r'certificate.*?foreign\s*status.*?beneficial\s*owner',
+            "W-8BEN-E": r'certificate.*?status.*?beneficial\s*owner.*?entities',
+            "W-8EXP": r'certificate.*?foreign\s*government',
+            "W-8IMY": r'certificate.*?foreign\s*intermediary',
+            "W-9": r'request.*?taxpayer\s*identification\s*number'
+        }
+        
+        # Sort by length of form key to check specific forms first (e.g. W-8BEN-E before W-8BEN)
         sorted_forms = sorted(self.form_identifiers.items(), key=lambda x: len(x[0]), reverse=True)
         
-        # First pass: Check for explicit titles (Strong match)
-        for form_type, title in sorted_forms:
-            if title.lower() in text.lower():
-                print(f"DEBUG: Found title for {form_type}")
+        # First pass: Check for titles (Strong match) using flexible regex
+        for form_type, _ in sorted_forms:
+            pattern = title_patterns.get(form_type)
+            if pattern and re.search(pattern, text, re.IGNORECASE):
+                print(f"DEBUG: Found title pattern for {form_type}")
                 return (form_type, True)
                 
-        # Second pass: Check for 'Form X' fallbacks (Weak match)
+        # Second pass: Check for 'Form X' fallbacks (Weak match) using flexible regex
         # We limit check to first 1000 chars to avoid matching instructions
+        first_1000 = text[:1000].lower()
         for form_type, _ in sorted_forms:
-            # Handle forms where "Form" and the form type might have varying spacing/newlines
-            form_type_clean = form_type.lower()
-            if f"form {form_type_clean}" in text[:1000].lower() or f"form\n{form_type_clean}" in text[:1000].lower():
-                print(f"DEBUG: Found 'Form {form_type}' fallback")
+            # Create a flexible regex from the form type (e.g. "W-8BEN" -> r'w\s*[-]?\s*8\s*b\s*e\s*n')
+            # This handles missing dashes, extra spaces, etc.
+            clean_form = form_type.replace('-', '')
+            regex_str = r'\s*[-]?\s*'.join(list(clean_form))
+            
+            # Look for "form [form_type]"
+            if re.search(rf'form\s*[-:\n]?\s*{regex_str}\b', first_1000, re.IGNORECASE):
+                print(f"DEBUG: Found 'form {form_type}' fallback via flexible regex")
                 return (form_type, False)
             
-            # Special fallback for W-9, which is often extracted with weird spacing like "Form W - 9" or just "W-9"
-            if form_type == "W-9" and re.search(r'\bw-?9\b', text[:1000].lower()):
-                print(f"DEBUG: Found 'W-9' fallback via regex")
-                return ("W-9", False)
+            # Special fallback just looking for the form name (e.g. "W-9") 
+            # We enforce word boundaries so "W-9" doesn't match inside a larger word
+            if re.search(rf'\b{regex_str}\b', first_1000, re.IGNORECASE):
+                print(f"DEBUG: Found '{form_type}' standalone via flexible regex")
+                return (form_type, False)
+                
                 
         # Check for certificates
         if self.certificate_pattern.search(text):
