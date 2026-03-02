@@ -20,6 +20,13 @@ def main():
 
     # File uploader
     uploaded_file = st.file_uploader("Choose a PDF file", type="pdf")
+    
+    # OCR Engine selection
+    engine_choice = st.selectbox(
+        "Select OCR Engine for Scanned Pages",
+        ["Tesseract (Faster, best for standard forms)", "EasyOCR (Better for skewed images/poor quality)"]
+    )
+    ocr_engine = "easyocr" if "EasyOCR" in engine_choice else "tesseract"
 
     if uploaded_file is not None:
         st.divider()
@@ -41,7 +48,7 @@ def main():
                 status_container.info("Analyzing and splitting PDF... This may take a moment (OCR active).")
                 
                 # Initialize splitter
-                splitter = PDFSplitter()
+                splitter = PDFSplitter(ocr_engine=ocr_engine)
                 
                 # Create output directory (persistent)
                 output_dir = "split_forms"

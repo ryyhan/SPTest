@@ -7,7 +7,19 @@ import re
 from collections import defaultdict
 
 class PDFSplitter:
-    def __init__(self):
+    def __init__(self, ocr_engine="tesseract"):
+        self.ocr_engine = ocr_engine
+        
+        if self.ocr_engine == "easyocr":
+            try:
+                import easyocr
+                # Initialize the EasyOCR reader once to avoid reloading model per page
+                # Set gpu=True if you have a GPU available
+                self.reader = easyocr.Reader(['en'], gpu=False)
+            except ImportError:
+                print("Warning: easyocr is not installed. Falling back to tesseract.")
+                self.ocr_engine = "tesseract"
+
         # Dictionary mapping form types to their unique titles
         self.form_identifiers = {
             "W-8BEN": "Certificate of Foreign Status of Beneficial Owner",
@@ -43,7 +55,18 @@ class PDFSplitter:
         if len(text.strip()) < 50:
             pix = page.get_pixmap()
             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-            text = pytesseract.image_to_string(img)
+            
+            if self.ocr_engine == "easyocr":
+                try:
+                    import numpy as np
+                    img_array = np.array(img)
+                    results = self.reader.readtext(img_array)
+                    text = ' '.join([res[1] for res in results])
+                except Exception as e:
+                    print(f"EasyOCR error: {e}. Falling back to tesseract.")
+                    text = pytesseract.image_to_string(img)
+            else:
+                text = pytesseract.image_to_string(img)
             
         return self.clean_text(text)
 
@@ -253,7 +276,8 @@ class PDFSplitter:
         return documents
 
 def main():
-    splitter = PDFSplitter()
+    # You can change to "easyocr" to test locally
+    splitter = PDFSplitter(ocr_engine="tesseract") 
     input_pdf = "ooo.pdf"
     output_directory = "split_forms"
     
