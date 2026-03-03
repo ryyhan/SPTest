@@ -3,6 +3,12 @@ from typing import List, Dict, Tuple
 import fitz
 import pytesseract
 from PIL import Image
+try:
+    import cv2
+    cv2.setNumThreads(4) # Force OpenCV to use multiple CPU cores for preprocessing
+    cv2.setUseOptimized(True) # Force SIMD/Intel optimizations
+except ImportError:
+    pass
 import re
 from collections import defaultdict
 from thefuzz import fuzz
@@ -16,7 +22,8 @@ class PDFSplitter:
                 import easyocr
                 # Initialize the EasyOCR reader once to avoid reloading model per page
                 # Set gpu=True if you have a GPU available
-                self.reader = easyocr.Reader(['en'], gpu=False)
+                # Set quantize=False as native floating-point math is often faster on modern CPUs than quantized integers
+                self.reader = easyocr.Reader(['en'], gpu=False, quantize=False)
             except ImportError:
                 print("Warning: easyocr is not installed. Falling back to tesseract.")
                 self.ocr_engine = "tesseract"
@@ -73,7 +80,11 @@ class PDFSplitter:
                 # 3. Apply Otsu's thresholding
                 # This mathematically finds the perfect divide between "ink" and "paper", forcing everything to pure black/white
                 # It completely removes shadows, weird lighting gradients, and compression artifacts
-                _, processed_img = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                # Note: EasyOCR prefers grayscale (anti-aliased) text, so we only apply thresholding for Tesseract
+                if self.ocr_engine == "easyocr":
+                     processed_img = gray
+                else:
+                     _, processed_img = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
                 
             except ImportError:
                 print("Warning: cv2 or numpy not installed. Skipping image preprocessing.")
@@ -83,8 +94,14 @@ class PDFSplitter:
             
             if self.ocr_engine == "easyocr":
                 try:
-                    # EasyOCR takes numpy arrays directly
-                    results = self.reader.readtext(processed_img)
+                    # EasyOCR takes numpy arrays directly. We use optimal params for reading dense documents.
+                    results = self.reader.readtext(
+                        processed_img,
+                        paragraph=True,           # Combine words into paragraphs
+                        x_ths=0.8,                # Tolerate more horizontal distance between words
+                        y_ths=0.5,                # Tolerate slight vertical shifts
+                        text_threshold=0.5,       # Be more forgiving on low-confidence letters
+                    )
                     text = ' '.join([res[1] for res in results])
                 except Exception as e:
                     print(f"EasyOCR error: {e}. Falling back to tesseract.")
