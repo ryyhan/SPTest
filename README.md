@@ -21,6 +21,8 @@ A Streamlit-based application for automatically splitting a single PDF containin
     
     pip install -r requirements.txt
     pip install easyocr numpy
+    pip install opencv-python
+    pip install thefuzz python-Levenshtein
 
     ```
 

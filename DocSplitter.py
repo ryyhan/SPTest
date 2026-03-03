@@ -55,19 +55,53 @@ class PDFSplitter:
         # If very little text is found (likely scanned or noise), try OCR
         if len(text.strip()) < 50:
             pix = page.get_pixmap()
-            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            
+            try:
+                import cv2
+                import numpy as np
+                
+                # 1. Convert PyMuPDF pixmap to numpy array
+                img_array = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
+                
+                # 2. Convert to Grayscale
+                # PyMuPDF typically returns RGB or RGBA depending on the PDF internal format
+                if pix.n >= 3:
+                     gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+                else:
+                     gray = img_array # Already grayscale
+                     
+                # 3. Apply Otsu's thresholding
+                # This mathematically finds the perfect divide between "ink" and "paper", forcing everything to pure black/white
+                # It completely removes shadows, weird lighting gradients, and compression artifacts
+                _, processed_img = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                
+            except ImportError:
+                print("Warning: cv2 or numpy not installed. Skipping image preprocessing.")
+                img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                processed_img = np.array(img) if 'numpy' in sys.modules else img
+                
             
             if self.ocr_engine == "easyocr":
                 try:
-                    import numpy as np
-                    img_array = np.array(img)
-                    results = self.reader.readtext(img_array)
+                    # EasyOCR takes numpy arrays directly
+                    results = self.reader.readtext(processed_img)
                     text = ' '.join([res[1] for res in results])
                 except Exception as e:
                     print(f"EasyOCR error: {e}. Falling back to tesseract.")
-                    text = pytesseract.image_to_string(img)
+                    # Tesseract prefers PIL Images, so we convert back
+                    pil_img = Image.fromarray(processed_img)
+                    text = pytesseract.image_to_string(pil_img)
             else:
-                text = pytesseract.image_to_string(img)
+                # Tesseract prefers PIL Images, so we convert back
+                try:
+                    pil_img = Image.fromarray(processed_img)
+                except Exception:
+                    # Fallback if preprocessing failed (e.g. cv2 not installed and img is a PIL Object)
+                    pil_img = processed_img if isinstance(processed_img, Image.Image) else Image.fromarray(processed_img)
+                    
+                # We can also add a PSM flag here for standard forms: block of text
+                custom_config = r'--oem 3 --psm 6'
+                text = pytesseract.image_to_string(pil_img, config=custom_config)
             
         return self.clean_text(text)
 
