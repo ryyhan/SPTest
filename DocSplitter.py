@@ -5,6 +5,7 @@ import pytesseract
 from PIL import Image
 import re
 from collections import defaultdict
+from thefuzz import fuzz
 
 class PDFSplitter:
     def __init__(self, ocr_engine="tesseract"):
@@ -114,6 +115,24 @@ class PDFSplitter:
                 print(f"DEBUG: Found '{form_type}' standalone via flexible regex")
                 return (form_type, False)
                 
+        # Third pass: Fuzzy Matching (Safety net for very bad OCR)
+        # We check if the text contains anything remotely similar to the form titles
+        for form_type, title in sorted_forms:
+            # partial_ratio checks if the shorter string (title) is similar to any 
+            # substring of the longer string (text).
+            score = fuzz.partial_ratio(title.lower(), first_1000)
+            if score > 85: # 85% similarity threshold
+                print(f"DEBUG: Found title via fuzzy matching (Score: {score}) for {form_type}")
+                return (form_type, True)
+                
+            # Let's also fuzzy match the form name itself (e.g. "Form W-9")
+            # We don't want to fuzzy match just "W-9", because "W-3" is 66% similar. 
+            # It needs to be "Form W-9" to give it enough length for a meaningful partial_ratio.
+            form_string = f"form {form_type.lower()}"
+            score_form = fuzz.partial_ratio(form_string, first_1000)
+            if score_form > 90: # Higher threshold for short strings
+                print(f"DEBUG: Found 'form {form_type}' via fuzzy matching (Score: {score_form})")
+                return (form_type, False)
                 
         # Check for certificates
         if self.certificate_pattern.search(text):
