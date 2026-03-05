@@ -268,21 +268,25 @@ class PDFSplitter:
                     max_count = max(allowed_counts)
                     
                     if current_len < max_count:
-                        # We haven't reached the max length yet.
-                        # BUT, if we are at a valid stopping point (e.g. W-9 page 1), 
-                        # we need to be careful.
+                        # We haven't reached the max length yet (e.g. current < 6 for W-9)
                         
                         if current_len in allowed_counts:
-                            # We are at a valid length (e.g. W-9 Page 1).
-                            # If the standard logic said "Start New" (e.g. found new title), we allow it.
-                            # If standard logic said "Continue" (e.g. Page 2), we allow it.
-                            pass 
+                            # We are at a valid stopping length (e.g. W-9 Page 1).
+                            # If the next page is clearly a NEW document title, we SHOULD split.
+                            # If the next page is just generic text or a page > 1, we SHOULD CONTINUE to build up to the max length.
+                            if start_new and is_start_page and form_type != "OTHER" and form_type != current_type:
+                                # Next page is a totally different form title. Allow the split.
+                                pass
+                            elif page_num_in_doc is not None and page_num_in_doc > 1:
+                                # Next page explicitly says "Page 2" etc. Force continuation.
+                                start_new = False
+                            elif form_type == "OTHER" or form_type == current_type:
+                                # Next page is generic text or same type. Assume it's part of the multi-page form.
+                                start_new = False
                         else:
-                            # We are NOT at a valid length (e.g. W-8BEN-E Page 3).
-                            # We MUST continue, UNLESS we see a totally different form title 
+                            # We are NOT at a valid stopping length (e.g. W-8BEN-E Page 3, or W-9 Page 2).
+                            # We MUST continue building the document, UNLESS we see a totally different form title 
                             # (which would mean the file is malformed/mixed up, but we should trust the title).
-                            # However, user said "W-8BEN-E will have 8 pages".
-                            # So we should bias heavily towards continuation.
                             
                             if start_new and (is_start_page and form_type != "OTHER"):
                                 # We found a NEW form title. This contradicts the page count rule.
