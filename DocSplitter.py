@@ -183,8 +183,11 @@ class PDFSplitter:
                     earliest_match_type = form_type
                     
         if earliest_match_type:
-            print(f"DEBUG: Found '{earliest_match_type}' as the earliest form mention via flexible regex")
-            return (earliest_match_type, False)
+            # If the mention is very early in the text (first 300 chars), 
+            # it's almost certainly the actual form header (top-left of doc), not instructions.
+            is_start = earliest_match_idx < 300
+            print(f"DEBUG: Found '{earliest_match_type}' as the earliest form mention via flexible regex (idx: {earliest_match_idx}, is_start: {is_start})")
+            return (earliest_match_type, is_start)
                 
                 
         # Third pass: Fuzzy Matching (Safety net for very bad OCR)
@@ -225,8 +228,11 @@ class PDFSplitter:
                 return (form_type, True)
                 
         if earliest_fuzzy_type:
-            print(f"DEBUG: Found '{earliest_fuzzy_type}' as the earliest form mention via fuzzy matching")
-            return (earliest_fuzzy_type, is_fuzzy_title_match)
+            # If the mention is very early in the text (first 300 chars),
+            # it's almost certainly the actual form header, not instructions.
+            is_start = is_fuzzy_title_match or (earliest_fuzzy_idx < 300)
+            print(f"DEBUG: Found '{earliest_fuzzy_type}' as the earliest form mention via fuzzy matching (idx: {earliest_fuzzy_idx}, is_start: {is_start})")
+            return (earliest_fuzzy_type, is_start)
                 
         # Check for certificates
         if self.certificate_pattern.search(text):
