@@ -37,6 +37,15 @@ class PDFSplitter:
             "W-9": "Request for Taxpayer Identification Number"
         }
         
+        # Unique catalog numbers and keywords for disambiguation
+        self.unique_identifiers = {
+            "W-8BEN": [r'\b25047z\b'],
+            "W-8BEN-E": [r'\b59689n\b', r'\bnonparticipating\b'],
+            "W-8EXP": [r'\b115\(2\)\b', r'\b1443\(b\)\b', r'\b897\(l\)-1\(d\)\b'],
+            "W-8IMY": [r'\b25402q\b', r'\bqi-ein\b', r'\bwp-ein\b', r'\bwt-ein\b'],
+            "W-9": [r'\b10231x\b', r'\b1099-int\b', r'\b1099-misc\b']
+        }
+        
         # Pattern to identify certificates
         self.certificate_pattern = re.compile(r'certificate', re.IGNORECASE)
         
@@ -138,6 +147,15 @@ class PDFSplitter:
         
         # Sort by length of form key to check specific forms first (e.g. W-8BEN-E before W-8BEN)
         sorted_forms = sorted(self.form_identifiers.items(), key=lambda x: len(x[0]), reverse=True)
+        
+        # Pass 0: Check for highly specific unique identifiers (Catalog numbers, unique EIN refs)
+        # These are practically impossible to false-match.
+        text_lower = text.lower()
+        for form_type, patterns in self.unique_identifiers.items():
+            for pattern in patterns:
+                if re.search(pattern, text_lower):
+                    print(f"DEBUG: Found unique identifier '{pattern}' for {form_type}")
+                    return (form_type, True)
         
         # First pass: Check for titles (Strong match) using flexible regex
         earliest_title_type = None
