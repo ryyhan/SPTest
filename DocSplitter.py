@@ -140,11 +140,20 @@ class PDFSplitter:
         sorted_forms = sorted(self.form_identifiers.items(), key=lambda x: len(x[0]), reverse=True)
         
         # First pass: Check for titles (Strong match) using flexible regex
+        earliest_title_type = None
+        earliest_title_idx = float('inf')
+        
         for form_type, _ in sorted_forms:
             pattern = title_patterns.get(form_type)
-            if pattern and re.search(pattern, text, re.IGNORECASE):
-                print(f"DEBUG: Found title pattern for {form_type}")
-                return (form_type, True)
+            if pattern:
+                match = re.search(pattern, text, re.IGNORECASE)
+                if match and match.start() < earliest_title_idx:
+                    earliest_title_idx = match.start()
+                    earliest_title_type = form_type
+                    
+        if earliest_title_type:
+            print(f"DEBUG: Found title pattern for {earliest_title_type} at idx {earliest_title_idx}")
+            return (earliest_title_type, True)
                 
         # Second pass: Check for 'Form X' fallbacks (Weak match) using flexible regex
         # We limit check to first 1000 chars to avoid matching instructions
