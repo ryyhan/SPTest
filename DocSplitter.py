@@ -180,22 +180,44 @@ class PDFSplitter:
                 
         # Third pass: Fuzzy Matching (Safety net for very bad OCR)
         # We check if the text contains anything remotely similar to the form titles
+        earliest_fuzzy_type = None
+        earliest_fuzzy_idx = float('inf')
+        is_fuzzy_title_match = False
+        
         for form_type, title in sorted_forms:
-            # partial_ratio checks if the shorter string (title) is similar to any 
-            # substring of the longer string (text).
-            score = fuzz.partial_ratio(title.lower(), first_1000)
-            if score > 85: # 85% similarity threshold
-                print(f"DEBUG: Found title via fuzzy matching (Score: {score}) for {form_type}")
-                return (form_type, True)
-                
-            # Let's also fuzzy match the form name itself (e.g. "Form W-9")
-            # We don't want to fuzzy match just "W-9", because "W-3" is 66% similar. 
-            # It needs to be "Form W-9" to give it enough length for a meaningful partial_ratio.
+            # We want to find *where* the fuzzy match occurred to see if it's the earliest
+            # Thefuzz doesn't give us the index easily, so we use regex to find the string that fuzz matched
+            
+            # Fuzzy match the form name itself (e.g. "Form W-9")
             form_string = f"form {form_type.lower()}"
             score_form = fuzz.partial_ratio(form_string, first_1000)
+            
             if score_form > 90: # Higher threshold for short strings
-                print(f"DEBUG: Found 'form {form_type}' via fuzzy matching (Score: {score_form})")
-                return (form_type, False)
+                # Try to find exactly where this matched in the text so we can prioritize the earliest
+                clean_form = form_type.replace('-', '')
+                regex_str = r'\s*[-]?\s*'.join(list(clean_form))
+                match = re.search(rf'form\s*[-:\n]?\s*{regex_str}\b', first_1000, re.IGNORECASE)
+                
+                # If we found it via regex (which means we got an index), use that index
+                # If not, let's just assume it's valid and if it's the only one, we use it.
+                idx = match.start() if match else float('inf')
+                
+                if idx < earliest_fuzzy_idx:
+                    earliest_fuzzy_idx = idx
+                    earliest_fuzzy_type = form_type
+                    is_fuzzy_title_match = False
+                    
+            # Let's also check the long title
+            score_title = fuzz.partial_ratio(title.lower(), first_1000)
+            if score_title > 85:
+                # If a long title fuzzy matches, it's extremely strong evidence. 
+                # Titles are usually at the very top.
+                print(f"DEBUG: Found title via fuzzy matching (Score: {score_title}) for {form_type}")
+                return (form_type, True)
+                
+        if earliest_fuzzy_type:
+            print(f"DEBUG: Found '{earliest_fuzzy_type}' as the earliest form mention via fuzzy matching")
+            return (earliest_fuzzy_type, is_fuzzy_title_match)
                 
         # Check for certificates
         if self.certificate_pattern.search(text):
