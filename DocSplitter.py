@@ -347,30 +347,28 @@ class PDFSplitter:
                     max_count = max(allowed_counts)
                     
                     if current_len < max_count:
-                        # We haven't reached the max length yet (e.g. current < 6 for W-9)
+                        # We haven't reached the guaranteed maximum length yet.
+                        # We MUST absolutely force continuation, to stitch the document together.
+                        start_new = False
                         
-                        if current_len in allowed_counts:
-                            # We are at a valid stopping length (e.g. W-9 Page 1).
-                            # If the next page is clearly a NEW document title, we SHOULD split.
-                            if start_new and is_start_page and form_type != "OTHER" and form_type != current_type:
-                                # Next page is a totally different form title. Allow the split.
-                                pass
-                            else:
-                                # Next page explicitly says "Page 2" OR is generic text OR is the same form type again.
-                                # Force continuation.
-                                start_new = False
-                        else:
-                            # We are NOT at a valid stopping length (e.g. W-8BEN-E Page 3, or W-9 Page 2).
-                            # We MUST continue building the document, UNLESS we see a totally different form title 
-                            # (which would mean the file is malformed/mixed up, but we should trust the title).
-                            
-                            if start_new and is_start_page and form_type != "OTHER" and form_type != current_type:
-                                # We found a NEW distinct form title. This contradicts the page count rule.
-                                # E.g. We are on Page 3 of W-8BEN-E, but found "Form W-9".
-                                pass
-                            else:
-                                # Otherwise, force continuation. Even if it found the SAME title again mid-document.
-                                start_new = False
+                        # The ONLY exception to this rule is if the file is completely malformed/mixed up
+                        # and we suddenly encounter the strong Title Header of a completely different form.
+                        # (e.g. Page 3 of an 8-page W-8IMY is missing, and instead it's Page 1 of a W-9).
+                        if is_start_page and form_type != "OTHER" and form_type != current_type:
+                             # We found a completely different explicit form type starting.
+                             # If we are currently sitting at a "valid" length (e.g. W-9 Page 1), let it split.
+                             if current_len in allowed_counts:
+                                 start_new = True
+                             # If we are NOT at a valid length (e.g. W-8IMY Page 3), we have a corrupted PDF.
+                             # Let's still split it, because it's better to isolate the new valid document
+                             # than to append W-9s to the bottom of W-8IMYs.
+                             else:
+                                 start_new = True
+                                 print(f"WARNING: Splitting {current_type} early at page {current_len}. Found {form_type}.")
+                                 
+                    elif current_len >= max_count:
+                        # We reached max length. Force split for next page.
+                        start_new = True
                     
                     elif current_len >= max_count:
                         # We reached max length. Force split for next page.
