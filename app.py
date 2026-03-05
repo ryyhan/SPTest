@@ -24,9 +24,19 @@ def main():
     # OCR Engine selection
     engine_choice = st.selectbox(
         "Select OCR Engine for Scanned Pages",
-        ["Tesseract (Faster, best for standard forms)", "EasyOCR (Better for skewed images/poor quality)"]
+        [
+            "RapidOCR (Fastest, excellent accuracy on CPU)",
+            "Tesseract (Fast, best for standard forms)", 
+            "EasyOCR (Better for skewed images/poor quality, but slow)"
+        ]
     )
-    ocr_engine = "easyocr" if "EasyOCR" in engine_choice else "tesseract"
+    
+    if "RapidOCR" in engine_choice:
+        ocr_engine = "rapidocr"
+    elif "EasyOCR" in engine_choice:
+        ocr_engine = "easyocr"
+    else:
+        ocr_engine = "tesseract"
 
     if uploaded_file is not None:
         st.divider()

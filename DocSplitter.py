@@ -28,6 +28,14 @@ class PDFSplitter:
             except ImportError:
                 print("Warning: easyocr is not installed. Falling back to tesseract.")
                 self.ocr_engine = "tesseract"
+                
+        elif self.ocr_engine == "rapidocr":
+            try:
+                from rapidocr_onnxruntime import RapidOCR
+                self.reader = RapidOCR()
+            except ImportError:
+                print("Warning: rapidocr_onnxruntime is not installed. Falling back to tesseract.")
+                self.ocr_engine = "tesseract"
 
         # Dictionary mapping form types to their unique titles
         self.form_identifiers = {
@@ -90,8 +98,9 @@ class PDFSplitter:
                 # 3. Apply Otsu's thresholding
                 # This mathematically finds the perfect divide between "ink" and "paper", forcing everything to pure black/white
                 # It completely removes shadows, weird lighting gradients, and compression artifacts
-                # Note: EasyOCR prefers grayscale (anti-aliased) text, so we only apply thresholding for Tesseract
-                if self.ocr_engine == "easyocr":
+                # Note: Deep learning models (EasyOCR, RapidOCR) prefer grayscale (anti-aliased) text, 
+                # so we only apply hard thresholding for Tesseract
+                if self.ocr_engine in ["easyocr", "rapidocr"]:
                      processed_img = gray
                 else:
                      _, processed_img = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
@@ -102,7 +111,20 @@ class PDFSplitter:
                 processed_img = np.array(img) if 'numpy' in sys.modules else img
                 
             
-            if self.ocr_engine == "easyocr":
+            if self.ocr_engine == "rapidocr":
+                try:
+                    # RapidOCR takes numpy arrays directly
+                    result, _ = self.reader(processed_img)
+                    if result:
+                        text = ' '.join([res[1] for res in result])
+                    else:
+                        text = ""
+                except Exception as e:
+                    print(f"RapidOCR error: {e}. Falling back to tesseract.")
+                    pil_img = Image.fromarray(processed_img)
+                    text = pytesseract.image_to_string(pil_img)
+                    
+            elif self.ocr_engine == "easyocr":
                 try:
                     # EasyOCR takes numpy arrays directly. We use optimal params for reading dense documents.
                     results = self.reader.readtext(

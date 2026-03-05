@@ -23,6 +23,7 @@ A Streamlit-based application for automatically splitting a single PDF containin
     pip install easyocr numpy
     pip install opencv-python
     pip install thefuzz python-Levenshtein
+    pip3 install rapidocr_onnxruntime 
 
     ```
 
