@@ -187,9 +187,14 @@ class PDFSplitter:
         
         # Helper to return the correct form type
         def get_return_val(matched_type, is_start):
-            final_type = forced_form_type if forced_form_type else matched_type
-            if final_type != matched_type and forced_form_type:
-                 print(f"DEBUG: Overriding matched type '{matched_type}' with forced type '{final_type}'")
+            # Only use the secret code to override if we actually found a title on this page
+            if matched_type not in ["OTHER", "CERTIFICATE"] and forced_form_type:
+                final_type = forced_form_type
+                if final_type != matched_type:
+                    print(f"DEBUG: Overriding matched type '{matched_type}' with forced type '{final_type}' based on secret code.")
+            else:
+                final_type = matched_type
+                
             return (final_type, is_start)
         
         # First pass: Check for titles (Strong match) using flexible regex
@@ -291,7 +296,7 @@ class PDFSplitter:
         if self.certificate_pattern.search(text):
             return get_return_val("CERTIFICATE", True)
             
-        return get_return_val("OTHER", True)
+        return get_return_val("OTHER", False)
 
     def extract_page_number(self, text: str) -> int:
         """Extract page number from text if present."""
