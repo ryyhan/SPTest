@@ -1,4 +1,5 @@
 import os
+import sys
 from typing import List, Dict, Tuple
 import fitz
 import pytesseract
@@ -298,7 +299,7 @@ class PDFSplitter:
         return None
 
     def group_pages(self, pdf_document) -> List[Dict]:
-        """Group pages into separate documents."""
+        """Group pages into separate documents strictly by physical page count."""
         documents = []
         current_doc = None
         
@@ -306,65 +307,44 @@ class PDFSplitter:
             page = pdf_document[page_num]
             text = self.extract_text_from_page(page)
             form_type, is_start_page = self.identify_form_type(text)
-            page_num_in_doc = self.extract_page_number(text)
-            print(f"DEBUG: Page {page_num} -> Type: {form_type}, IsStart: {is_start_page}, PageNum: {page_num_in_doc}")
+            print(f"DEBUG: Page {page_num} -> Type: {form_type}, IsStart: {is_start_page}")
             
-            # Determine if we should start a new document
             start_new = False
             
             if current_doc is None:
                 start_new = True
             else:
-                # Check strict page count rules
                 current_type = current_doc['type']
                 current_len = len(current_doc['pages'])
                 
-                # Default behavior (Priority Logic)
-                if is_start_page and form_type != "OTHER":
-                    # PRIORITY 1: Explicit Title Found -> START NEW
-                    start_new = True
-                elif page_num_in_doc is not None and page_num_in_doc > 1:
-                    # PRIORITY 2: Page > 1 -> CONTINUE
-                    start_new = False
-                elif page_num_in_doc == 1:
-                    # PRIORITY 3: Explicit Page 1 -> START NEW
-                    start_new = True
-                else:
-                    # PRIORITY 4: Fallback
-                    if form_type == current_type:
-                         # Same type, no title -> Continuation
-                         start_new = False
-                    elif form_type != "OTHER":
-                        # Different type -> Split
-                        start_new = True
-                    else:
-                        # OTHER -> Continuation
-                        start_new = False
-
-                # OVERRIDE WITH STRICT PAGE COUNTS
+                # Check if we are currently building a form with known strict length rules
                 if current_type in self.form_rules:
-                    allowed_counts = self.form_rules[current_type]
+                    allowed_counts = self.form_rules[current_type]  # e.g., [1, 6] for W-9, or [8] for W-8IMY
                     max_count = max(allowed_counts)
                     
                     if current_len < max_count:
-                        # We haven't reached the maximum length yet.
-                        # We MUST absolutely force continuation to stitch the document together.
+                        # We have NOT reached the maximum allowed length for this form yet.
+                        # Rule 1: Always absorb the page, UNLESS we are at a valid stopping point
+                        # AND the new page is definitively starting a new form.
+                        if current_len in allowed_counts and is_start_page and form_type != "OTHER" and form_type != current_type:
+                            start_new = True
+                        else:
+                            # Blindly absorb! Ignore any text, footers, or fake titles.
+                            # If it's page 2 of a 104-page PDF, and page 1 was W-8IMY, 
+                            # page 2 belongs to W-8IMY regardless of what's printed on it.
+                            start_new = False
+                    else:
+                        # We have hit the absolute maximum length for this form.
+                        # The very next page MUST start a new document.
+                        start_new = True
+                
+                else:
+                    # We are building a form with NO strict length rules (e.g. "OTHER" or "CERTIFICATE")
+                    # We only split when the scanner detects a brand new, definitive form title.
+                    if is_start_page and form_type != "OTHER" and form_type != current_type:
+                        start_new = True
+                    else:
                         start_new = False
-                        
-                        # However, some forms (like W-9) are allowed to stop early (e.g. at 1 page).
-                        # If we have reached an allowed stopping point, AND the current page is screaming
-                        # that it is the start of a completely different document, we allow it to split.
-                        if current_len in allowed_counts:
-                            if is_start_page and form_type != "OTHER" and form_type != current_type:
-                                 start_new = True
-                                 
-                    elif current_len >= max_count:
-                        # We reached max length. Force split for next page.
-                        start_new = True
-                    
-                    elif current_len >= max_count:
-                        # We reached max length. Force split for next page.
-                        start_new = True
             
             if start_new:
                 if current_doc is not None:
