@@ -347,24 +347,16 @@ class PDFSplitter:
                     max_count = max(allowed_counts)
                     
                     if current_len < max_count:
-                        # We haven't reached the guaranteed maximum length yet.
-                        # We MUST absolutely force continuation, to stitch the document together.
+                        # We haven't reached the maximum length yet.
+                        # We MUST absolutely force continuation to stitch the document together.
                         start_new = False
                         
-                        # The ONLY exception to this rule is if the file is completely malformed/mixed up
-                        # and we suddenly encounter the strong Title Header of a completely different form.
-                        # (e.g. Page 3 of an 8-page W-8IMY is missing, and instead it's Page 1 of a W-9).
-                        if is_start_page and form_type != "OTHER" and form_type != current_type:
-                             # We found a completely different explicit form type starting.
-                             # If we are currently sitting at a "valid" length (e.g. W-9 Page 1), let it split.
-                             if current_len in allowed_counts:
+                        # However, some forms (like W-9) are allowed to stop early (e.g. at 1 page).
+                        # If we have reached an allowed stopping point, AND the current page is screaming
+                        # that it is the start of a completely different document, we allow it to split.
+                        if current_len in allowed_counts:
+                            if is_start_page and form_type != "OTHER" and form_type != current_type:
                                  start_new = True
-                             # If we are NOT at a valid length (e.g. W-8IMY Page 3), we have a corrupted PDF.
-                             # Let's still split it, because it's better to isolate the new valid document
-                             # than to append W-9s to the bottom of W-8IMYs.
-                             else:
-                                 start_new = True
-                                 print(f"WARNING: Splitting {current_type} early at page {current_len}. Found {form_type}.")
                                  
                     elif current_len >= max_count:
                         # We reached max length. Force split for next page.
