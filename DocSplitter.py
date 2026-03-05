@@ -273,28 +273,24 @@ class PDFSplitter:
                         if current_len in allowed_counts:
                             # We are at a valid stopping length (e.g. W-9 Page 1).
                             # If the next page is clearly a NEW document title, we SHOULD split.
-                            # If the next page is just generic text or a page > 1, we SHOULD CONTINUE to build up to the max length.
                             if start_new and is_start_page and form_type != "OTHER" and form_type != current_type:
                                 # Next page is a totally different form title. Allow the split.
                                 pass
-                            elif page_num_in_doc is not None and page_num_in_doc > 1:
-                                # Next page explicitly says "Page 2" etc. Force continuation.
-                                start_new = False
-                            elif form_type == "OTHER" or form_type == current_type:
-                                # Next page is generic text or same type. Assume it's part of the multi-page form.
+                            else:
+                                # Next page explicitly says "Page 2" OR is generic text OR is the same form type again.
+                                # Force continuation.
                                 start_new = False
                         else:
                             # We are NOT at a valid stopping length (e.g. W-8BEN-E Page 3, or W-9 Page 2).
                             # We MUST continue building the document, UNLESS we see a totally different form title 
                             # (which would mean the file is malformed/mixed up, but we should trust the title).
                             
-                            if start_new and (is_start_page and form_type != "OTHER"):
-                                # We found a NEW form title. This contradicts the page count rule.
+                            if start_new and is_start_page and form_type != "OTHER" and form_type != current_type:
+                                # We found a NEW distinct form title. This contradicts the page count rule.
                                 # E.g. We are on Page 3 of W-8BEN-E, but found "Form W-9".
-                                # We should probably respect the Title (file might be truncated).
                                 pass
                             else:
-                                # Otherwise, force continuation
+                                # Otherwise, force continuation. Even if it found the SAME title again mid-document.
                                 start_new = False
                     
                     elif current_len >= max_count:
