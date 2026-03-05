@@ -151,11 +151,23 @@ class PDFSplitter:
         # Pass 0: Check for highly specific unique identifiers (Catalog numbers, unique EIN refs)
         # These are practically impossible to false-match.
         text_lower = text.lower()
+        forced_form_type = None
         for form_type, patterns in self.unique_identifiers.items():
             for pattern in patterns:
-                if re.search(pattern, text_lower):
-                    print(f"DEBUG: Found unique identifier '{pattern}' for {form_type}")
-                    return (form_type, True)
+                match = re.search(pattern, text_lower)
+                if match:
+                    print(f"DEBUG: Found unique identifier '{pattern}' for {form_type}. Forcing form type.")
+                    forced_form_type = form_type
+                    break
+            if forced_form_type:
+                break
+        
+        # Helper to return the correct form type
+        def get_return_val(matched_type, is_start):
+            final_type = forced_form_type if forced_form_type else matched_type
+            if final_type != matched_type and forced_form_type:
+                 print(f"DEBUG: Overriding matched type '{matched_type}' with forced type '{final_type}'")
+            return (final_type, is_start)
         
         # First pass: Check for titles (Strong match) using flexible regex
         earliest_title_type = None
@@ -171,7 +183,7 @@ class PDFSplitter:
                     
         if earliest_title_type:
             print(f"DEBUG: Found title pattern for {earliest_title_type} at idx {earliest_title_idx}")
-            return (earliest_title_type, True)
+            return get_return_val(earliest_title_type, True)
                 
         # Second pass: Check for 'Form X' fallbacks (Weak match) using flexible regex
         # We limit check to first 1000 chars to avoid matching instructions
@@ -205,7 +217,7 @@ class PDFSplitter:
             # it's almost certainly the actual form header (top-left of doc), not instructions.
             is_start = earliest_match_idx < 300
             print(f"DEBUG: Found '{earliest_match_type}' as the earliest form mention via flexible regex (idx: {earliest_match_idx}, is_start: {is_start})")
-            return (earliest_match_type, is_start)
+            return get_return_val(earliest_match_type, is_start)
                 
                 
         # Third pass: Fuzzy Matching (Safety net for very bad OCR)
@@ -243,20 +255,20 @@ class PDFSplitter:
                 # If a long title fuzzy matches, it's extremely strong evidence. 
                 # Titles are usually at the very top.
                 print(f"DEBUG: Found title via fuzzy matching (Score: {score_title}) for {form_type}")
-                return (form_type, True)
+                return get_return_val(form_type, True)
                 
         if earliest_fuzzy_type:
             # If the mention is very early in the text (first 300 chars),
             # it's almost certainly the actual form header, not instructions.
             is_start = is_fuzzy_title_match or (earliest_fuzzy_idx < 300)
             print(f"DEBUG: Found '{earliest_fuzzy_type}' as the earliest form mention via fuzzy matching (idx: {earliest_fuzzy_idx}, is_start: {is_start})")
-            return (earliest_fuzzy_type, is_start)
+            return get_return_val(earliest_fuzzy_type, is_start)
                 
         # Check for certificates
         if self.certificate_pattern.search(text):
-            return ("CERTIFICATE", True)
+            return get_return_val("CERTIFICATE", True)
             
-        return ("OTHER", True)
+        return get_return_val("OTHER", True)
 
     def extract_page_number(self, text: str) -> int:
         """Extract page number from text if present."""
