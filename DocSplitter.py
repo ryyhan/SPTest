@@ -149,22 +149,34 @@ class PDFSplitter:
         # Second pass: Check for 'Form X' fallbacks (Weak match) using flexible regex
         # We limit check to first 1000 chars to avoid matching instructions
         first_1000 = text[:1000].lower()
+        
+        # To avoid misclassifying Forms that mention OTHER forms in their instructions (e.g. W-8IMY mentions W-8BEN-E),
+        # we will collect all matches and pick the one that appears *earliest* in the text.
+        earliest_match_type = None
+        earliest_match_idx = float('inf')
+        
         for form_type, _ in sorted_forms:
-            # Create a flexible regex from the form type (e.g. "W-8BEN" -> r'w\s*[-]?\s*8\s*b\s*e\s*n')
-            # This handles missing dashes, extra spaces, etc.
             clean_form = form_type.replace('-', '')
             regex_str = r'\s*[-]?\s*'.join(list(clean_form))
             
             # Look for "form [form_type]"
-            if re.search(rf'form\s*[-:\n]?\s*{regex_str}\b', first_1000, re.IGNORECASE):
-                print(f"DEBUG: Found 'form {form_type}' fallback via flexible regex")
-                return (form_type, False)
+            match_form = re.search(rf'form\s*[-:\n]?\s*{regex_str}\b', first_1000, re.IGNORECASE)
+            if match_form:
+                if match_form.start() < earliest_match_idx:
+                    earliest_match_idx = match_form.start()
+                    earliest_match_type = form_type
             
             # Special fallback just looking for the form name (e.g. "W-9") 
-            # We enforce word boundaries so "W-9" doesn't match inside a larger word
-            if re.search(rf'\b{regex_str}\b', first_1000, re.IGNORECASE):
-                print(f"DEBUG: Found '{form_type}' standalone via flexible regex")
-                return (form_type, False)
+            match_standalone = re.search(rf'\b{regex_str}\b', first_1000, re.IGNORECASE)
+            if match_standalone:
+                if match_standalone.start() < earliest_match_idx:
+                    earliest_match_idx = match_standalone.start()
+                    earliest_match_type = form_type
+                    
+        if earliest_match_type:
+            print(f"DEBUG: Found '{earliest_match_type}' as the earliest form mention via flexible regex")
+            return (earliest_match_type, False)
+                
                 
         # Third pass: Fuzzy Matching (Safety net for very bad OCR)
         # We check if the text contains anything remotely similar to the form titles
