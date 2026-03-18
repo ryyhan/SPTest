@@ -18,6 +18,9 @@ numpy>=1.24.0            # Required by opencv and OCR engines
 # Web application
 streamlit>=1.30.0        # Web UI framework
 
+# LLM Support (optional, for AI-powered classification)
+openai>=1.0.0            # Required for LLM classification feature
+
 # Note: Install Tesseract OCR separately:
 #   macOS: brew install tesseract
 #   Ubuntu: sudo apt-get install tesseract-ocr

@@ -36,6 +36,37 @@ def main():
         use_parallel = st.checkbox("Enable parallel processing (faster)", value=True)
         max_workers = st.slider("Number of worker threads", 1, 8, 4)
         show_debug = st.checkbox("Show debug information", value=False)
+        
+        st.divider()
+        
+        # LLM Classification Option
+        st.subheader("🤖 AI-Powered Classification")
+        use_llm = st.checkbox(
+            "Enable LLM classification (higher accuracy, slower)",
+            value=False,
+            help="Use GPT-4o mini to classify pages. More accurate but slower than rule-based detection."
+        )
+        
+        if use_llm:
+            api_key = st.text_input(
+                "API Key",
+                type="password",
+                help="Your OpenAI API key or your company's LLM API key"
+            )
+            api_base = st.text_input(
+                "API Base URL (optional)",
+                placeholder="https://api.openai.com/v1",
+                help="Custom API endpoint (e.g., your company's LLM gateway)"
+            )
+            llm_model = st.text_input(
+                "Model Name",
+                value="gpt-4o-mini",
+                help="The LLM model to use (e.g., gpt-4o-mini)"
+            )
+        else:
+            api_key = None
+            api_base = None
+            llm_model = "gpt-4o-mini"
 
     if "RapidOCR" in engine_choice:
         ocr_engine = "rapidocr"
@@ -63,7 +94,13 @@ def main():
                 status_container.info("Analyzing and splitting PDF... This may take a moment (OCR active).")
 
                 # Initialize splitter
-                splitter = PDFSplitter(ocr_engine=ocr_engine)
+                splitter = PDFSplitter(
+                    ocr_engine=ocr_engine,
+                    use_llm=use_llm,
+                    api_key=api_key if use_llm else None,
+                    api_base=api_base if use_llm else None,
+                    llm_model=llm_model
+                )
 
                 # Create output directory (persistent)
                 output_dir = "split_forms"
@@ -126,6 +163,8 @@ def main():
                                     status_icons.append("🔍")
                                 if doc.get('is_ambiguous', False):
                                     status_icons.append("⚠️")
+                                if doc.get('method') == 'llm':
+                                    status_icons.append("🤖")
                                 
                                 icon_str = " ".join(status_icons) if status_icons else "✅"
                                 st.markdown(f"**{icon_str} {i+1}. {doc['type']}**")
@@ -133,6 +172,8 @@ def main():
                                 page_info = f"Pages: {len(doc['pages'])} | ID: {doc['id']}"
                                 if show_debug:
                                     page_info += f" | Confidence: {doc.get('confidence', 'N/A')}%"
+                                    if doc.get('method') == 'llm':
+                                        page_info += " | 🤖 LLM"
                                 st.caption(page_info)
 
                             with col2:
@@ -151,6 +192,8 @@ def main():
                                     patterns = doc.get('matched_patterns', [])
                                     if patterns:
                                         st.caption(f"**Patterns:** {', '.join(patterns)}")
+                                    if doc.get('reasoning'):
+                                        st.caption(f"**Reasoning:** {doc['reasoning'][:100]}...")
                             
                             if doc.get('confidence', 100) < 80 or doc.get('is_ambiguous', False):
                                 st.markdown("</div>", unsafe_allow_html=True)

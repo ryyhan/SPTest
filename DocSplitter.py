@@ -18,6 +18,14 @@ import re
 from collections import defaultdict
 from thefuzz import fuzz
 
+# Optional LLM support
+try:
+    from openai import OpenAI
+    OPENAI_AVAILABLE = True
+except ImportError:
+    OPENAI_AVAILABLE = False
+    OpenAI = None
+
 
 @dataclass
 class PageAnalysis:
@@ -71,7 +79,69 @@ class PDFSplitter:
         'w': ['vv', 'VV'],
     }
     
-    def __init__(self, ocr_engine="tesseract"):
+    # LLM Configuration
+    LLM_FORM_SYSTEM_PROMPT = """You are an expert document classification assistant specialized in US tax forms. Your task is to analyze text extracted from PDF pages and accurately identify the form type.
+
+AVAILABLE FORM TYPES (in priority order):
+1. W-8BEN: "Certificate of Foreign Status of Beneficial Owner for United States Tax Withholding and Reporting (Individuals)"
+   - Key identifiers: Catalog number 25047Z, "individuals", "beneficial owner", "foreign status"
+   - Typical length: 1 page
+
+2. W-8BEN-E: "Certificate of Status of Beneficial Owner for United States Tax Withholding and Reporting (Entities)"
+   - Key identifiers: Catalog number 59689N, "entities", "beneficial owner", "nonparticipating"
+   - Typical length: 8 pages
+   - IMPORTANT: Distinguish from W-8BEN by looking for "entities" vs "individuals"
+
+3. W-8EXP: "Certificate of Foreign Government or Other Foreign Organization for United States Tax Withholding and Reporting"
+   - Key identifiers: Catalog numbers 115(2), 1443(b), 897(l)-1(d), "foreign government"
+   - Typical length: 3 pages
+
+4. W-8IMY: "Certificate of Foreign Intermediary, Foreign Flow-Through Entity, or Certain U.S. Branches for United States Tax Withholding and Reporting"
+   - Key identifiers: Catalog number 25402Q, "intermediary", "qi-ein", "wp-ein", "wt-ein"
+   - Typical length: 8 pages
+
+5. W-9: "Request for Taxpayer Identification Number and Certification"
+   - Key identifiers: Catalog number 10231X, "1099-INT", "1099-MISC", "TIN", "EIN"
+   - Typical length: 1 or 6 pages (with instructions)
+
+6. CERTIFICATE: Any certificate document that doesn't match the above forms
+   - Look for words like "certificate", "certification", "certified"
+
+7. OTHER: Any document that doesn't match the above categories
+
+CLASSIFICATION RULES:
+1. Catalog numbers are the STRONGEST signal - if you see one, trust it above all else
+2. Form titles in headers are very strong signals
+3. Be careful of form instructions that mention other form types (e.g., W-8IMY instructions mention W-8BEN-E)
+4. Consider the overall document structure and layout
+5. OCR text may contain errors - use context to infer correct values (e.g., "25O47Z" is likely "25047Z")
+6. If the page contains multiple form references, identify which form this page BELONGS TO (not just mentions)
+
+You will receive text extracted from a single page. Return your classification as JSON."""
+
+    LLM_FORM_USER_TEMPLATE = """Analyze this text from page {page_num} of a PDF and classify the form type.
+
+TEXT EXTRACT (may contain OCR errors):
+---
+{text}
+---
+
+Respond with ONLY a valid JSON object in this exact format:
+{{
+    "form_type": "W-8BEN",
+    "confidence": 0.95,
+    "reasoning": "Brief explanation of your decision",
+    "is_first_page": true,
+    "detected_catalog": "25047Z or null if not found",
+    "alternative_forms": ["W-8BEN-E"] if any, otherwise omit
+}}
+
+form_type must be one of: W-8BEN, W-8BEN-E, W-8EXP, W-8IMY, W-9, CERTIFICATE, OTHER
+confidence should be between 0.0 and 1.0
+is_first_page should be true if this appears to be the first page of a multi-page form
+"""
+    
+    def __init__(self, ocr_engine="tesseract", use_llm=False, api_key=None, api_base=None, llm_model="gpt-4o-mini"):
         self.ocr_engine = ocr_engine
 
         if self.ocr_engine == "easyocr":
@@ -126,6 +196,31 @@ class PDFSplitter:
         # Pre-compute OCR variants for all unique identifiers (cached for performance)
         self._catalog_variants_cache = {}
         self._build_catalog_variants_cache()
+        
+        # LLM Configuration
+        self.use_llm = use_llm
+        self.llm_model = llm_model
+        self.api_key = api_key
+        self.api_base = api_base
+        self.client = None
+        
+        if self.use_llm:
+            if not OPENAI_AVAILABLE:
+                print("Warning: openai package not installed. LLM classification disabled.")
+                self.use_llm = False
+            elif not api_key:
+                print("Warning: No API key provided. LLM classification disabled.")
+                self.use_llm = False
+            else:
+                try:
+                    if api_base:
+                        self.client = OpenAI(api_key=api_key, base_url=api_base)
+                    else:
+                        self.client = OpenAI(api_key=api_key)
+                    print(f"LLM classification enabled using model: {llm_model}")
+                except Exception as e:
+                    print(f"Warning: Failed to initialize OpenAI client: {e}. LLM classification disabled.")
+                    self.use_llm = False
     
     def _build_catalog_variants_cache(self):
         """Pre-compute OCR variants for all catalog numbers."""
@@ -284,7 +379,116 @@ class PDFSplitter:
             previous_row = current_row
         
         return previous_row[-1]
+
+    def classify_page_with_llm(self, text: str, page_num: int) -> Optional[Dict]:
+        """
+        Use LLM to classify a page based on its text content.
         
+        Args:
+            text: Extracted text from the page
+            page_num: Page number (0-indexed)
+        
+        Returns:
+            Dictionary with classification results, or None if LLM fails
+        """
+        if not self.use_llm or not self.client:
+            return None
+        
+        try:
+            # Truncate text to avoid token limits (leave room for prompt + response)
+            # GPT-4o-mini has 128K context, but we'll be conservative
+            max_text_length = 10000
+            if len(text) > max_text_length:
+                # Keep beginning and end, which usually has the most important info
+                text = text[:max_text_length // 2] + "\n...[truncated]...\n" + text[-max_text_length // 2:]
+            
+            # Build the prompt
+            user_prompt = self.LLM_FORM_USER_TEMPLATE.format(
+                page_num=page_num + 1,  # 1-indexed for LLM
+                text=text
+            )
+            
+            # Call the LLM
+            response = self.client.chat.completions.create(
+                model=self.llm_model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": self.LLM_FORM_SYSTEM_PROMPT
+                    },
+                    {
+                        "role": "user",
+                        "content": user_prompt
+                    }
+                ],
+                temperature=0.1,  # Low temperature for consistency
+                max_tokens=400
+            )
+            
+            # Parse the response
+            import json
+            response_text = response.choices[0].message.content.strip()
+            
+            # Try to extract JSON from the response
+            # Handle cases where LLM adds markdown code blocks
+            if response_text.startswith("```"):
+                # Remove markdown code block if present
+                lines = response_text.split("\n")
+                if lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].startswith("```"):
+                    lines = lines[:-1]
+                response_text = "\n".join(lines)
+            
+            # Find JSON in response (in case there's extra text)
+            json_start = response_text.find("{")
+            json_end = response_text.rfind("}") + 1
+            if json_start >= 0 and json_end > json_start:
+                response_text = response_text[json_start:json_end]
+            
+            result = json.loads(response_text)
+            
+            # Map LLM response to our format
+            form_type = result.get("form_type", "OTHER").upper()
+            confidence = float(result.get("confidence", 0.5)) * 100
+            reasoning = result.get("reasoning", "LLM classification")
+            is_first_page = result.get("is_first_page", False)
+            detected_catalog = result.get("detected_catalog")
+            alternative_forms = result.get("alternative_forms", [])
+            
+            # Validate form type
+            valid_types = ["W-8BEN", "W-8BEN-E", "W-8EXP", "W-8IMY", "W-9", "CERTIFICATE", "OTHER"]
+            if form_type not in valid_types:
+                print(f"Warning: LLM returned invalid form_type '{form_type}', defaulting to OTHER")
+                form_type = "OTHER"
+            
+            # Build patterns list
+            patterns = [f"llm:{form_type}"]
+            if detected_catalog:
+                patterns.append(f"llm_catalog:{detected_catalog}")
+            
+            # Check for ambiguity
+            is_ambiguous = len(alternative_forms) > 0
+            
+            return {
+                'form_type': form_type,
+                'confidence': confidence,
+                'reasoning': reasoning,
+                'is_start_page': is_first_page,
+                'matched_patterns': patterns,
+                'is_ambiguous': is_ambiguous,
+                'ambiguous_forms': alternative_forms,
+                'detected_catalog': detected_catalog,
+                'method': 'llm'
+            }
+            
+        except json.JSONDecodeError as e:
+            print(f"LLM response parsing error: {e}. Response: {response_text}")
+            return None
+        except Exception as e:
+            print(f"LLM classification error: {e}")
+            return None
+
     def clean_text(self, text: str) -> str:
         """Clean and normalize text for comparison."""
         # Remove extra whitespace and newlines
@@ -624,20 +828,41 @@ class PDFSplitter:
     def analyze_page(self, page_num: int, page) -> PageAnalysis:
         """Analyze a single page and return structured analysis."""
         text, ocr_metadata = self.extract_text_from_page(page)
-        form_type, is_start, confidence, patterns, is_ambiguous, ambiguous_forms = self.identify_form_type(text)
         
-        return PageAnalysis(
-            page_num=page_num,
-            text=text,
-            form_type=form_type,
-            is_start_page=is_start,
-            confidence=confidence,
-            has_images=ocr_metadata.get('images_found', False),
-            text_length=len(text),
-            matched_patterns=patterns,
-            is_ambiguous=is_ambiguous,
-            ambiguous_forms=ambiguous_forms
-        )
+        # Try LLM classification first if enabled
+        llm_result = None
+        if self.use_llm and self.client:
+            llm_result = self.classify_page_with_llm(text, page_num)
+        
+        if llm_result:
+            # Use LLM result
+            return PageAnalysis(
+                page_num=page_num,
+                text=text,
+                form_type=llm_result['form_type'],
+                is_start_page=llm_result['is_start_page'],
+                confidence=llm_result['confidence'],
+                has_images=ocr_metadata.get('images_found', False),
+                text_length=len(text),
+                matched_patterns=llm_result['matched_patterns'],
+                is_ambiguous=llm_result['is_ambiguous'],
+                ambiguous_forms=llm_result.get('ambiguous_forms', [])
+            )
+        else:
+            # Fall back to logic-based classification
+            form_type, is_start, confidence, patterns, is_ambiguous, ambiguous_forms = self.identify_form_type(text)
+            return PageAnalysis(
+                page_num=page_num,
+                text=text,
+                form_type=form_type,
+                is_start_page=is_start,
+                confidence=confidence,
+                has_images=ocr_metadata.get('images_found', False),
+                text_length=len(text),
+                matched_patterns=patterns,
+                is_ambiguous=is_ambiguous,
+                ambiguous_forms=ambiguous_forms or []
+            )
 
     def analyze_pages_parallel(self, pdf_document, max_workers: int = 4) -> List[PageAnalysis]:
         """Analyze all pages in parallel using ThreadPoolExecutor."""
