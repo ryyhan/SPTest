@@ -1,23 +1,53 @@
 import os
 import sys
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
+from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import fitz
 import pytesseract
 from PIL import Image
 try:
     import cv2
+    import numpy as np
     cv2.setNumThreads(4) # Force OpenCV to use multiple CPU cores for preprocessing
     cv2.setUseOptimized(True) # Force SIMD/Intel optimizations
 except ImportError:
-    pass
+    cv2 = None
+    numpy = None
 import re
 from collections import defaultdict
 from thefuzz import fuzz
 
+
+@dataclass
+class PageAnalysis:
+    """Stores analysis results for a single page."""
+    page_num: int
+    text: str
+    form_type: str
+    is_start_page: bool
+    confidence: float
+    has_images: bool
+    text_length: int
+    matched_patterns: List[str]
+    is_ambiguous: bool = False
+    ambiguous_forms: List[str] = None
+
 class PDFSplitter:
+    # Confidence thresholds for different detection tiers
+    CONFIDENCE_UNIQUE_ID = 100.0   # Unique catalog number match
+    CONFIDENCE_TITLE = 95.0        # Full title pattern match
+    CONFIDENCE_FORM = 80.0         # Form name match
+    CONFIDENCE_FUZZY = 60.0        # Fuzzy match
+    CONFIDENCE_CERTIFICATE = 70.0  # Certificate pattern
+    
+    # OCR threshold settings
+    OCR_TEXT_LENGTH_THRESHOLD = 100  # Trigger OCR if text < this
+    OCR_IMAGE_COUNT_THRESHOLD = 1    # Trigger OCR if page has images AND low text
+    
     def __init__(self, ocr_engine="tesseract"):
         self.ocr_engine = ocr_engine
-        
+
         if self.ocr_engine == "easyocr":
             try:
                 import easyocr
@@ -28,7 +58,7 @@ class PDFSplitter:
             except ImportError:
                 print("Warning: easyocr is not installed. Falling back to tesseract.")
                 self.ocr_engine = "tesseract"
-                
+
         elif self.ocr_engine == "rapidocr":
             try:
                 from rapidocr_onnxruntime import RapidOCR
@@ -72,92 +102,131 @@ class PDFSplitter:
         # Remove extra whitespace and newlines
         return ' '.join(text.replace('\n', ' ').split())
 
-    def extract_text_from_page(self, page) -> str:
-        """Extract text from a page using both native text extraction and OCR if needed."""
+    def should_trigger_ocr(self, text: str, page) -> Tuple[bool, dict]:
+        """
+        Determine if OCR should be triggered based on multiple factors.
+        Returns (should_ocr, metadata_dict).
+        """
+        metadata = {
+            'text_length': len(text.strip()),
+            'has_images': False,
+            'reason': 'native_text_sufficient'
+        }
+        
+        # Check for images on the page
+        try:
+            images = page.get_images()
+            metadata['has_images'] = len(images) > 0
+        except Exception:
+            pass
+        
+        text_length = len(text.strip())
+        
+        # Rule 1: Very little text found - likely scanned
+        if text_length < self.OCR_TEXT_LENGTH_THRESHOLD:
+            if metadata['has_images']:
+                metadata['reason'] = 'low_text_with_images'
+            else:
+                metadata['reason'] = 'low_text_no_images'
+            return True, metadata
+        
+        # Rule 2: Text exists but page has images - might be form with signature/image
+        # Only trigger if text is relatively low (< 300 chars) AND has images
+        if text_length < 300 and metadata['has_images']:
+            metadata['reason'] = 'moderate_text_with_images'
+            return True, metadata
+        
+        # Rule 3: Check for "scanned" artifacts (e.g., text appears as single long line)
+        lines = text.split('\n')
+        if len(lines) == 1 and len(text) > 500:
+            # Single long line might indicate poor PDF text extraction
+            metadata['reason'] = 'single_line_text'
+            return True, metadata
+        
+        return False, metadata
+
+    def extract_text_from_page(self, page) -> Tuple[str, dict]:
+        """
+        Extract text from a page using both native text extraction and OCR if needed.
+        Returns (text, metadata_dict).
+        """
         # Try native text extraction first
         text = page.get_text()
+        ocr_metadata = {'ocr_used': False, 'ocr_reason': None}
         
-        # If very little text is found (likely scanned or noise), try OCR
-        if len(text.strip()) < 50:
+        # Determine if OCR should be triggered
+        should_ocr, ocr_info = self.should_trigger_ocr(text, page)
+        
+        if should_ocr:
             pix = page.get_pixmap()
-            
-            try:
-                import cv2
-                import numpy as np
-                
-                # 1. Convert PyMuPDF pixmap to numpy array
-                img_array = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
-                
-                # 2. Convert to Grayscale
-                # PyMuPDF typically returns RGB or RGBA depending on the PDF internal format
-                if pix.n >= 3:
-                     gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
-                else:
-                     gray = img_array # Already grayscale
-                     
-                # 3. Apply Otsu's thresholding
-                # This mathematically finds the perfect divide between "ink" and "paper", forcing everything to pure black/white
-                # It completely removes shadows, weird lighting gradients, and compression artifacts
-                # Note: Deep learning models (EasyOCR, RapidOCR) prefer grayscale (anti-aliased) text, 
-                # so we only apply hard thresholding for Tesseract
-                if self.ocr_engine in ["easyocr", "rapidocr"]:
-                     processed_img = gray
-                else:
-                     _, processed_img = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-                
-            except ImportError:
-                print("Warning: cv2 or numpy not installed. Skipping image preprocessing.")
-                img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-                processed_img = np.array(img) if 'numpy' in sys.modules else img
-                
-            
-            if self.ocr_engine == "rapidocr":
-                try:
-                    # RapidOCR takes numpy arrays directly
-                    result, _ = self.reader(processed_img)
-                    if result:
-                        text = ' '.join([res[1] for res in result])
-                    else:
-                        text = ""
-                except Exception as e:
-                    print(f"RapidOCR error: {e}. Falling back to tesseract.")
-                    pil_img = Image.fromarray(processed_img)
-                    text = pytesseract.image_to_string(pil_img)
-                    
-            elif self.ocr_engine == "easyocr":
-                try:
-                    # EasyOCR takes numpy arrays directly. We use optimal params for reading dense documents.
-                    results = self.reader.readtext(
-                        processed_img,
-                        paragraph=True,           # Combine words into paragraphs
-                        x_ths=0.8,                # Tolerate more horizontal distance between words
-                        y_ths=0.5,                # Tolerate slight vertical shifts
-                        text_threshold=0.5,       # Be more forgiving on low-confidence letters
-                    )
-                    text = ' '.join([res[1] for res in results])
-                except Exception as e:
-                    print(f"EasyOCR error: {e}. Falling back to tesseract.")
-                    # Tesseract prefers PIL Images, so we convert back
-                    pil_img = Image.fromarray(processed_img)
-                    text = pytesseract.image_to_string(pil_img)
-            else:
-                # Tesseract prefers PIL Images, so we convert back
-                try:
-                    pil_img = Image.fromarray(processed_img)
-                except Exception:
-                    # Fallback if preprocessing failed (e.g. cv2 not installed and img is a PIL Object)
-                    pil_img = processed_img if isinstance(processed_img, Image.Image) else Image.fromarray(processed_img)
-                    
-                # We can also add a PSM flag here for standard forms: block of text
-                custom_config = r'--oem 3 --psm 6'
-                text = pytesseract.image_to_string(pil_img, config=custom_config)
-            
-        return self.clean_text(text)
+            ocr_metadata['ocr_reason'] = ocr_info['reason']
 
-    def identify_form_type(self, text: str) -> Tuple[str, bool]:
+            try:
+                if cv2 is not None and numpy is not None:
+                    # 1. Convert PyMuPDF pixmap to numpy array
+                    img_array = numpy.frombuffer(pix.samples, dtype=numpy.uint8).reshape(pix.height, pix.width, pix.n)
+
+                    # 2. Convert to Grayscale
+                    if pix.n >= 3:
+                         gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+                    else:
+                         gray = img_array
+
+                    # 3. Apply Otsu's thresholding for Tesseract only
+                    if self.ocr_engine in ["easyocr", "rapidocr"]:
+                         processed_img = gray
+                    else:
+                         _, processed_img = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+                else:
+                    img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                    processed_img = numpy.array(img) if 'numpy' in sys.modules else img
+
+
+                if self.ocr_engine == "rapidocr":
+                    try:
+                        result, _ = self.reader(processed_img)
+                        if result:
+                            text = ' '.join([res[1] for res in result])
+                        else:
+                            text = ""
+                    except Exception as e:
+                        print(f"RapidOCR error: {e}. Falling back to tesseract.")
+                        pil_img = Image.fromarray(processed_img)
+                        text = pytesseract.image_to_string(pil_img)
+
+                elif self.ocr_engine == "easyocr":
+                    try:
+                        results = self.reader.readtext(
+                            processed_img,
+                            paragraph=True,
+                            x_ths=0.8,
+                            y_ths=0.5,
+                            text_threshold=0.5,
+                        )
+                        text = ' '.join([res[1] for res in results])
+                    except Exception as e:
+                        print(f"EasyOCR error: {e}. Falling back to tesseract.")
+                        pil_img = Image.fromarray(processed_img)
+                        text = pytesseract.image_to_string(pil_img)
+                else:
+                    pil_img = Image.fromarray(processed_img) if not isinstance(processed_img, Image.Image) else processed_img
+                    custom_config = r'--oem 3 --psm 6'
+                    text = pytesseract.image_to_string(pil_img, config=custom_config)
+                
+                ocr_metadata['ocr_used'] = True
+                ocr_metadata['images_found'] = ocr_info.get('has_images', False)
+
+            except Exception as e:
+                print(f"OCR preprocessing error: {e}. Using native text.")
+                ocr_metadata['ocr_error'] = str(e)
+
+        return self.clean_text(text), ocr_metadata
+
+    def identify_form_type(self, text: str) -> Tuple[str, bool, float, List[str], bool, List[str]]:
         """
         Identify the type of form based on text content using flexible regex.
-        Returns a tuple of (form_type, is_start_page).
+        Returns a tuple of (form_type, is_start_page, confidence, matched_patterns, is_ambiguous, ambiguous_forms).
         """
         # Dictionary of regex patterns for titles
         title_patterns = {
@@ -167,40 +236,41 @@ class PDFSplitter:
             "W-8IMY": r'certificate.*?foreign\s*intermediary',
             "W-9": r'request.*?taxpayer\s*identification\s*number'
         }
-        
+
         # Sort by length of form key to check specific forms first (e.g. W-8BEN-E before W-8BEN)
         sorted_forms = sorted(self.form_identifiers.items(), key=lambda x: len(x[0]), reverse=True)
-        
+
+        # Track all detected forms for ambiguity detection
+        detected_forms = []
+        matched_patterns = []
+
         # Pass 0: Check for highly specific unique identifiers (Catalog numbers, unique EIN refs)
-        # These are practically impossible to false-match.
         text_lower = text.lower()
         forced_form_type = None
+        unique_id_patterns = []
+        
         for form_type, patterns in self.unique_identifiers.items():
             for pattern in patterns:
                 match = re.search(pattern, text_lower)
                 if match:
                     print(f"DEBUG: Found unique identifier '{pattern}' for {form_type}. Forcing form type.")
                     forced_form_type = form_type
-                    break
-            if forced_form_type:
-                break
-        
-        # Helper to return the correct form type
-        def get_return_val(matched_type, is_start):
-            # Only use the secret code to override if we actually found a title on this page
-            if matched_type not in ["OTHER", "CERTIFICATE"] and forced_form_type:
-                final_type = forced_form_type
-                if final_type != matched_type:
-                    print(f"DEBUG: Overriding matched type '{matched_type}' with forced type '{final_type}' based on secret code.")
-            else:
-                final_type = matched_type
-                
-            return (final_type, is_start)
-        
+                    unique_id_patterns.append(f"{form_type}:{pattern}")
+                    detected_forms.append((form_type, self.CONFIDENCE_UNIQUE_ID, 'unique_id'))
+
+        # Helper to build return value
+        def build_result(matched_type, is_start, confidence, patterns, is_ambiguous=False, ambiguous=None):
+            # Use unique ID to override if found
+            final_type = forced_form_type if forced_form_type and matched_type not in ["OTHER", "CERTIFICATE"] else matched_type
+            if final_type != matched_type and matched_type not in ["OTHER", "CERTIFICATE"]:
+                print(f"DEBUG: Overriding matched type '{matched_type}' with forced type '{final_type}' based on secret code.")
+            return (final_type, is_start, confidence, patterns, is_ambiguous, ambiguous or [])
+
         # First pass: Check for titles (Strong match) using flexible regex
         earliest_title_type = None
         earliest_title_idx = float('inf')
-        
+        title_matches = []
+
         for form_type, _ in sorted_forms:
             pattern = title_patterns.get(form_type)
             if pattern:
@@ -208,95 +278,92 @@ class PDFSplitter:
                 if match and match.start() < earliest_title_idx:
                     earliest_title_idx = match.start()
                     earliest_title_type = form_type
-                    
+                    title_matches.append(form_type)
+                    detected_forms.append((form_type, self.CONFIDENCE_TITLE, 'title'))
+
         if earliest_title_type:
             print(f"DEBUG: Found title pattern for {earliest_title_type} at idx {earliest_title_idx}")
-            return get_return_val(earliest_title_type, True)
-                
+            is_ambiguous = len(title_matches) > 1
+            ambiguous = title_matches[1:] if is_ambiguous else []
+            return build_result(earliest_title_type, True, self.CONFIDENCE_TITLE, 
+                              [f"title:{earliest_title_type}"], is_ambiguous, ambiguous)
+
         # Second pass: Check for 'Form X' fallbacks (Weak match) using flexible regex
-        # We limit check to first 1000 chars to avoid matching instructions
         first_1000 = text[:1000].lower()
-        
-        # To avoid misclassifying Forms that mention OTHER forms in their instructions (e.g. W-8IMY mentions W-8BEN-E),
-        # we will collect all matches and pick the one that appears *earliest* in the text.
         earliest_match_type = None
         earliest_match_idx = float('inf')
-        
+        form_matches = []
+
         for form_type, _ in sorted_forms:
             clean_form = form_type.replace('-', '')
             regex_str = r'\s*[-]?\s*'.join(list(clean_form))
-            
-            # Look for "form [form_type]"
+
             match_form = re.search(rf'form\s*[-:\n]?\s*{regex_str}\b', first_1000, re.IGNORECASE)
             if match_form:
                 if match_form.start() < earliest_match_idx:
                     earliest_match_idx = match_form.start()
                     earliest_match_type = form_type
-            
-            # Special fallback just looking for the form name (e.g. "W-9") 
+                form_matches.append(form_type)
+                detected_forms.append((form_type, self.CONFIDENCE_FORM, 'form_name'))
+
             match_standalone = re.search(rf'\b{regex_str}\b', first_1000, re.IGNORECASE)
             if match_standalone:
                 if match_standalone.start() < earliest_match_idx:
                     earliest_match_idx = match_standalone.start()
                     earliest_match_type = form_type
-                    
+
         if earliest_match_type:
-            # If the mention is very early in the text (first 300 chars), 
-            # it's almost certainly the actual form header (top-left of doc), not instructions.
             is_start = earliest_match_idx < 300
+            is_ambiguous = len(set(form_matches)) > 1
+            ambiguous = list(set(form_matches) - {earliest_match_type}) if is_ambiguous else []
             print(f"DEBUG: Found '{earliest_match_type}' as the earliest form mention via flexible regex (idx: {earliest_match_idx}, is_start: {is_start})")
-            return get_return_val(earliest_match_type, is_start)
-                
-                
+            if is_ambiguous:
+                print(f"DEBUG: Ambiguous page - also found: {ambiguous}")
+            return build_result(earliest_match_type, is_start, self.CONFIDENCE_FORM,
+                              [f"form_name:{earliest_match_type}"], is_ambiguous, ambiguous)
+
+
         # Third pass: Fuzzy Matching (Safety net for very bad OCR)
-        # We check if the text contains anything remotely similar to the form titles
         earliest_fuzzy_type = None
         earliest_fuzzy_idx = float('inf')
         is_fuzzy_title_match = False
-        
+        fuzzy_matches = []
+
         for form_type, title in sorted_forms:
-            # We want to find *where* the fuzzy match occurred to see if it's the earliest
-            # Thefuzz doesn't give us the index easily, so we use regex to find the string that fuzz matched
-            
-            # Fuzzy match the form name itself (e.g. "Form W-9")
             form_string = f"form {form_type.lower()}"
             score_form = fuzz.partial_ratio(form_string, first_1000)
-            
-            if score_form > 90: # Higher threshold for short strings
-                # Try to find exactly where this matched in the text so we can prioritize the earliest
+
+            if score_form > 90:
                 clean_form = form_type.replace('-', '')
                 regex_str = r'\s*[-]?\s*'.join(list(clean_form))
                 match = re.search(rf'form\s*[-:\n]?\s*{regex_str}\b', first_1000, re.IGNORECASE)
-                
-                # If we found it via regex (which means we got an index), use that index
-                # If not, let's just assume it's valid and if it's the only one, we use it.
                 idx = match.start() if match else float('inf')
-                
+
                 if idx < earliest_fuzzy_idx:
                     earliest_fuzzy_idx = idx
                     earliest_fuzzy_type = form_type
                     is_fuzzy_title_match = False
-                    
-            # Let's also check the long title
+                fuzzy_matches.append(form_type)
+                detected_forms.append((form_type, self.CONFIDENCE_FUZZY, 'fuzzy'))
+
             score_title = fuzz.partial_ratio(title.lower(), first_1000)
             if score_title > 85:
-                # If a long title fuzzy matches, it's extremely strong evidence. 
-                # Titles are usually at the very top.
                 print(f"DEBUG: Found title via fuzzy matching (Score: {score_title}) for {form_type}")
-                return get_return_val(form_type, True)
-                
+                return build_result(form_type, True, self.CONFIDENCE_FUZZY, [f"fuzzy_title:{form_type}"])
+
         if earliest_fuzzy_type:
-            # If the mention is very early in the text (first 300 chars),
-            # it's almost certainly the actual form header, not instructions.
             is_start = is_fuzzy_title_match or (earliest_fuzzy_idx < 300)
+            is_ambiguous = len(set(fuzzy_matches)) > 1
+            ambiguous = list(set(fuzzy_matches) - {earliest_fuzzy_type}) if is_ambiguous else []
             print(f"DEBUG: Found '{earliest_fuzzy_type}' as the earliest form mention via fuzzy matching (idx: {earliest_fuzzy_idx}, is_start: {is_start})")
-            return get_return_val(earliest_fuzzy_type, is_start)
-                
+            return build_result(earliest_fuzzy_type, is_start, self.CONFIDENCE_FUZZY,
+                              [f"fuzzy:{earliest_fuzzy_type}"], is_ambiguous, ambiguous)
+
         # Check for certificates
         if self.certificate_pattern.search(text):
-            return get_return_val("CERTIFICATE", True)
-            
-        return get_return_val("OTHER", False)
+            return build_result("CERTIFICATE", True, self.CONFIDENCE_CERTIFICATE, ["certificate_pattern"])
+
+        return build_result("OTHER", False, 50.0, [], False, [])
 
     def extract_page_number(self, text: str) -> int:
         """Extract page number from text if present."""
@@ -325,73 +392,146 @@ class PDFSplitter:
             
         return None
 
-    def group_pages(self, pdf_document) -> List[Dict]:
+    def analyze_page(self, page_num: int, page) -> PageAnalysis:
+        """Analyze a single page and return structured analysis."""
+        text, ocr_metadata = self.extract_text_from_page(page)
+        form_type, is_start, confidence, patterns, is_ambiguous, ambiguous_forms = self.identify_form_type(text)
+        
+        return PageAnalysis(
+            page_num=page_num,
+            text=text,
+            form_type=form_type,
+            is_start_page=is_start,
+            confidence=confidence,
+            has_images=ocr_metadata.get('images_found', False),
+            text_length=len(text),
+            matched_patterns=patterns,
+            is_ambiguous=is_ambiguous,
+            ambiguous_forms=ambiguous_forms
+        )
+
+    def analyze_pages_parallel(self, pdf_document, max_workers: int = 4) -> List[PageAnalysis]:
+        """Analyze all pages in parallel using ThreadPoolExecutor."""
+        analyses = []
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all page analysis tasks
+            future_to_page = {
+                executor.submit(self.analyze_page, page_num, pdf_document[page_num]): page_num
+                for page_num in range(len(pdf_document))
+            }
+            
+            # Collect results as they complete (may not be in order)
+            results = {}
+            for future in as_completed(future_to_page):
+                page_num = future_to_page[future]
+                try:
+                    analysis = future.result()
+                    results[page_num] = analysis
+                except Exception as e:
+                    print(f"Error analyzing page {page_num}: {e}")
+                    # Create a fallback analysis
+                    results[page_num] = PageAnalysis(
+                        page_num=page_num,
+                        text="",
+                        form_type="OTHER",
+                        is_start_page=False,
+                        confidence=0.0,
+                        has_images=False,
+                        text_length=0,
+                        matched_patterns=[],
+                        is_ambiguous=False,
+                        ambiguous_forms=None
+                    )
+            
+            # Convert to ordered list
+            analyses = [results[i] for i in range(len(results))]
+        
+        return analyses
+
+    def group_pages(self, pdf_document, use_parallel: bool = True, max_workers: int = 4) -> List[Dict]:
         """Group pages into separate documents strictly by physical page count."""
+        # Analyze all pages (parallel or sequential)
+        if use_parallel:
+            print(f"Analyzing {len(pdf_document)} pages in parallel with {max_workers} workers...")
+            analyses = self.analyze_pages_parallel(pdf_document, max_workers)
+        else:
+            print(f"Analyzing {len(pdf_document)} pages sequentially...")
+            analyses = []
+            for page_num in range(len(pdf_document)):
+                page = pdf_document[page_num]
+                analysis = self.analyze_page(page_num, page)
+                analyses.append(analysis)
+        
+        # Debug print analysis results
+        for analysis in analyses:
+            print(f"DEBUG: Page {analysis.page_num} -> Type: {analysis.form_type}, "
+                  f"IsStart: {analysis.is_start_page}, Confidence: {analysis.confidence}, "
+                  f"Ambiguous: {analysis.is_ambiguous}")
+            if analysis.is_ambiguous:
+                print(f"  WARNING: Page {analysis.page_num} is ambiguous - also contains: {analysis.ambiguous_forms}")
+
         documents = []
         current_doc = None
-        
-        for page_num in range(len(pdf_document)):
-            page = pdf_document[page_num]
-            text = self.extract_text_from_page(page)
-            form_type, is_start_page = self.identify_form_type(text)
-            print(f"DEBUG: Page {page_num} -> Type: {form_type}, IsStart: {is_start_page}")
+
+        for analysis in analyses:
+            form_type = analysis.form_type
+            is_start_page = analysis.is_start_page
+            page_num = analysis.page_num
             
             start_new = False
-            
+
             if current_doc is None:
                 start_new = True
             else:
                 current_type = current_doc['type']
                 current_len = len(current_doc['pages'])
-                
+
                 # Check if we are currently building a form with known strict length rules
                 if current_type in self.form_rules:
-                    allowed_counts = self.form_rules[current_type]  # e.g., [1, 6] for W-9, or [8] for W-8IMY
+                    allowed_counts = self.form_rules[current_type]
                     max_count = max(allowed_counts)
-                    
+
                     if current_len < max_count:
                         # We have NOT reached the maximum allowed length for this form yet.
-                        # Rule 1: Always absorb the page, UNLESS we are at a valid stopping point
-                        # AND the new page is definitively starting a new form.
                         if current_len in allowed_counts and is_start_page and form_type != "OTHER" and form_type != current_type:
                             start_new = True
                         else:
-                            # Blindly absorb! Ignore any text, footers, or fake titles.
-                            # If it's page 2 of a 104-page PDF, and page 1 was W-8IMY, 
-                            # page 2 belongs to W-8IMY regardless of what's printed on it.
+                            # Blindly absorb page
                             start_new = False
                     else:
-                        # We have hit the absolute maximum length for this form.
-                        # The very next page MUST start a new document.
+                        # Hit max length, force new doc
                         start_new = True
-                
+
                 else:
-                    # We are building a form with NO strict length rules (e.g. "OTHER" or "CERTIFICATE")
-                    # We only split when the scanner detects a brand new, definitive form title.
+                    # No strict length rules
                     if is_start_page and form_type != "OTHER" and form_type != current_type:
                         start_new = True
                     else:
                         start_new = False
-            
+
             if start_new:
                 if current_doc is not None:
                     documents.append(current_doc)
-                
+
                 # Create new document
                 doc_id = len([d for d in documents if d['type'] == form_type]) + 1
                 current_doc = {
                     'type': form_type,
                     'pages': [],
                     'id': doc_id,
-                    'text': text  # Store first page text for naming certificates
+                    'text': analysis.text,
+                    'confidence': analysis.confidence,
+                    'is_ambiguous': analysis.is_ambiguous,
+                    'ambiguous_forms': analysis.ambiguous_forms or []
                 }
-            
+
             current_doc['pages'].append(page_num)
-            
+
         # Add the last document
         if current_doc is not None:
             documents.append(current_doc)
-            
+
         return documents
 
     def generate_filename(self, doc: Dict) -> str:
@@ -416,44 +556,74 @@ class PDFSplitter:
         else:
             return f"{doc['type'].lower()}_{doc['id']}.pdf"
 
-    def split_pdf(self, input_path: str, output_dir: str) -> List[Dict]:
-        """Split PDF into separate files based on form types."""
-        os.makedirs(output_dir, exist_ok=True)
+    def split_pdf(self, input_path: str, output_dir: str, use_parallel: bool = True, max_workers: int = 4) -> List[Dict]:
+        """
+        Split PDF into separate files based on form types.
         
+        Args:
+            input_path: Path to input PDF
+            output_dir: Directory to save split PDFs
+            use_parallel: Whether to use parallel processing (default True)
+            max_workers: Number of worker threads for parallel processing (default 4)
+        
+        Returns:
+            List of document dictionaries with metadata
+        """
+        os.makedirs(output_dir, exist_ok=True)
+
         # Open the PDF
         pdf_document = fitz.open(input_path)
-        
+
         # Group pages into separate documents
-        documents = self.group_pages(pdf_document)
-        
+        documents = self.group_pages(pdf_document, use_parallel=use_parallel, max_workers=max_workers)
+
         # Create separate PDFs for each document
         for doc in documents:
             new_pdf = fitz.open()
             for page_num in doc['pages']:
                 new_pdf.insert_pdf(pdf_document, from_page=page_num, to_page=page_num)
-            
+
             output_filename = self.generate_filename(doc)
             output_path = os.path.join(output_dir, output_filename)
             new_pdf.save(output_path)
             new_pdf.close()
-        
+
         pdf_document.close()
         return documents
 
+    def get_low_confidence_documents(self, documents: List[Dict], threshold: float = 80.0) -> List[Dict]:
+        """Return documents with confidence below threshold."""
+        return [doc for doc in documents if doc.get('confidence', 100.0) < threshold]
+
+    def get_ambiguous_documents(self, documents: List[Dict]) -> List[Dict]:
+        """Return documents that contain ambiguous pages."""
+        return [doc for doc in documents if doc.get('is_ambiguous', False)]
+
 def main():
     # You can change to "easyocr" to test locally
-    splitter = PDFSplitter(ocr_engine="tesseract") 
+    splitter = PDFSplitter(ocr_engine="tesseract")
     input_pdf = "ooo.pdf"
     output_directory = "split_forms"
-    
+
     try:
-        result = splitter.split_pdf(input_pdf, output_directory)
-        
+        result = splitter.split_pdf(input_pdf, output_directory, use_parallel=True, max_workers=4)
+
         # Print summary
         print("\nPDF splitting complete! Summary:")
         for doc in result:
-            print(f"{doc['type']} (ID: {doc['id']}): {len(doc['pages'])} page(s)")
-            
+            confidence = doc.get('confidence', 'N/A')
+            ambiguous = "⚠️ Ambiguous" if doc.get('is_ambiguous', False) else ""
+            print(f"{doc['type']} (ID: {doc['id']}): {len(doc['pages'])} page(s) | Confidence: {confidence}% {ambiguous}")
+
+        # Show warnings
+        low_conf = splitter.get_low_confidence_documents(result)
+        ambiguous_docs = splitter.get_ambiguous_documents(result)
+        
+        if low_conf:
+            print(f"\n⚠️ Low confidence documents: {[d['type'] + '#' + str(d['id']) for d in low_conf]}")
+        if ambiguous_docs:
+            print(f"\n⚠️ Ambiguous documents: {[d['type'] + '#' + str(d['id']) for d in ambiguous_docs]}")
+
     except Exception as e:
         print(f"Error processing PDF: {str(e)}")
 
