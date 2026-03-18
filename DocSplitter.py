@@ -45,6 +45,32 @@ class PDFSplitter:
     OCR_TEXT_LENGTH_THRESHOLD = 100  # Trigger OCR if text < this
     OCR_IMAGE_COUNT_THRESHOLD = 1    # Trigger OCR if page has images AND low text
     
+    # Common OCR confusions for generating variants
+    OCR_CONFUSIONS = {
+        '0': ['O', 'o'],
+        'O': ['0', 'o'],
+        'o': ['0', 'O'],
+        '1': ['l', 'I', 'i', '|'],
+        'l': ['1', 'I', 'i'],
+        'I': ['1', 'l', 'i', '|'],
+        'i': ['1', 'l', 'I'],
+        '5': ['S', 's'],
+        'S': ['5', 's'],
+        's': ['5', 'S'],
+        '8': ['B', 'b'],
+        'B': ['8', 'b'],
+        'b': ['8', 'B'],
+        'Z': ['2', 'z'],
+        '2': ['Z', 'z'],
+        'z': ['Z', '2'],
+        '6': ['G', 'g'],
+        'G': ['6', 'g'],
+        '9': ['g', 'q'],
+        'g': ['9', 'q'],
+        'm': ['rn', 'rn'],
+        'w': ['vv', 'VV'],
+    }
+    
     def __init__(self, ocr_engine="tesseract"):
         self.ocr_engine = ocr_engine
 
@@ -75,7 +101,7 @@ class PDFSplitter:
             "W-8IMY": "Certificate of Foreign Intermediary",
             "W-9": "Request for Taxpayer Identification Number"
         }
-        
+
         # Unique catalog numbers and keywords for disambiguation
         self.unique_identifiers = {
             "W-8BEN": [r'\b25047z\b'],
@@ -84,10 +110,10 @@ class PDFSplitter:
             "W-8IMY": [r'\b25402q\b', r'\bqi-ein\b', r'\bwp-ein\b', r'\bwt-ein\b'],
             "W-9": [r'\b10231x\b', r'\b1099-int\b', r'\b1099-misc\b']
         }
-        
+
         # Pattern to identify certificates
         self.certificate_pattern = re.compile(r'certificate', re.IGNORECASE)
-        
+
         # Strict page count rules
         self.form_rules = {
             "W-9": [1, 6],
@@ -96,6 +122,168 @@ class PDFSplitter:
             "W-8EXP": [3],
             "W-8IMY": [8]
         }
+        
+        # Pre-compute OCR variants for all unique identifiers (cached for performance)
+        self._catalog_variants_cache = {}
+        self._build_catalog_variants_cache()
+    
+    def _build_catalog_variants_cache(self):
+        """Pre-compute OCR variants for all catalog numbers."""
+        for form_type, patterns in self.unique_identifiers.items():
+            self._catalog_variants_cache[form_type] = []
+            for pattern in patterns:
+                # Remove regex word boundaries for variant generation
+                catalog = pattern.strip(r'\b')
+                # Generate variants only for alphanumeric catalogs (not regex patterns with parens)
+                if not any(c in catalog for c in ['(', ')', '[', ']', '-']):
+                    variants = self.generate_ocr_variants(catalog)
+                    self._catalog_variants_cache[form_type].extend(variants)
+    
+    def generate_ocr_variants(self, text: str, max_variants: int = 50) -> List[str]:
+        """
+        Generate common OCR misreadings for a given text.
+        
+        Args:
+            text: The original text (e.g., "25047z")
+            max_variants: Maximum number of variants to generate
+        
+        Returns:
+            List of variant strings that might appear in OCR output
+        """
+        variants = set()
+        variants.add(text.lower())  # Always include original (lowercase)
+        
+        # Single character substitutions (most common OCR errors)
+        for i, char in enumerate(text):
+            if char in self.OCR_CONFUSIONS:
+                for replacement in self.OCR_CONFUSIONS[char]:
+                    variant = text[:i] + replacement + text[i+1:]
+                    variants.add(variant.lower())
+        
+        # Double character substitutions (less common but still frequent)
+        if len(text) >= 2:
+            for i in range(len(text) - 1):
+                char1, char2 = text[i], text[i+1]
+                if char1 in self.OCR_CONFUSIONS and char2 in self.OCR_CONFUSIONS:
+                    for rep1 in self.OCR_CONFUSIONS[char1][:2]:  # Limit to avoid explosion
+                        for rep2 in self.OCR_CONFUSIONS[char2][:2]:
+                            variant = text[:i] + rep1 + rep2 + text[i+2:]
+                            variants.add(variant.lower())
+        
+        # Common multi-char confusions
+        multi_char_subs = {
+            'rn': 'm',
+            'm': 'rn',
+            'vv': 'w',
+            'VV': 'w',
+            'cl': 'd',
+            'd': 'cl',
+        }
+        for orig, sub in multi_char_subs.items():
+            if orig in text:
+                variants.add(text.replace(orig, sub).lower())
+            if sub in text:
+                variants.add(text.replace(sub, orig).lower())
+        
+        return list(variants)[:max_variants]
+    
+    def fuzzy_match_catalog(self, text: str, expected_catalog: str) -> Tuple[bool, float, str]:
+        """
+        Check if text contains a catalog number with fuzzy matching.
+        
+        Args:
+            text: The OCR-extracted text to search
+            expected_catalog: The expected catalog number (e.g., "25047z")
+        
+        Returns:
+            Tuple of (found: bool, confidence: float, matched_variant: str)
+        """
+        text_lower = text.lower()
+        expected_lower = expected_catalog.lower()
+        
+        # Level 1: Exact match (highest confidence)
+        if expected_lower in text_lower:
+            return True, 100.0, expected_lower
+        
+        # Level 2: Check pre-computed OCR variants (high confidence)
+        if expected_catalog not in self._catalog_variants_cache:
+            # Cache miss - generate variants now
+            variants = self.generate_ocr_variants(expected_catalog)
+            self._catalog_variants_cache[expected_catalog] = variants
+        else:
+            variants = self._catalog_variants_cache[expected_catalog]
+        
+        for variant in variants:
+            if variant in text_lower:
+                return True, 95.0, variant
+        
+        # Level 3: Fuzzy string matching (medium confidence)
+        # Use thefuzz to find partial matches
+        # Slide a window of catalog length across the text
+        catalog_len = len(expected_catalog)
+        best_score = 0
+        best_match = ""
+        
+        for i in range(len(text_lower) - catalog_len + 1):
+            window = text_lower[i:i + catalog_len]
+            score = fuzz.ratio(window, expected_lower)
+            if score > best_score:
+                best_score = score
+                best_match = window
+        
+        # Also check partial_ratio which handles substring matching better
+        partial_score = fuzz.partial_ratio(expected_lower, text_lower)
+        
+        best_score = max(best_score, partial_score)
+        
+        if best_score >= 75:  # 75% similarity threshold
+            return True, best_score, best_match
+        
+        # Level 4: Check for character-level similarity with position tolerance
+        # This handles cases where OCR adds/removes characters
+        if self._levenshtein_contains(text_lower, expected_lower, max_distance=2):
+            return True, 70.0, "levenshtein_match"
+        
+        return False, 0.0, ""
+    
+    def _levenshtein_contains(self, text: str, pattern: str, max_distance: int = 2) -> bool:
+        """
+        Check if text contains pattern with at most max_distance edits.
+        Handles OCR errors that add/remove characters.
+        """
+        if len(pattern) < 3:
+            return False  # Too short for meaningful fuzzy match
+        
+        # Slide window and check Levenshtein distance
+        for i in range(len(text) - len(pattern) + max_distance + 1):
+            for window_size in range(len(pattern) - max_distance, len(pattern) + max_distance + 1):
+                if i + window_size > len(text):
+                    continue
+                window = text[i:i + window_size]
+                distance = self._levenshtein_distance(window, pattern)
+                if distance <= max_distance:
+                    return True
+        return False
+    
+    def _levenshtein_distance(self, s1: str, s2: str) -> int:
+        """Calculate Levenshtein distance between two strings."""
+        if len(s1) < len(s2):
+            return self._levenshtein_distance(s2, s1)
+        
+        if len(s2) == 0:
+            return len(s1)
+        
+        previous_row = range(len(s2) + 1)
+        for i, c1 in enumerate(s1):
+            current_row = [i + 1]
+            for j, c2 in enumerate(s2):
+                insertions = previous_row[j + 1] + 1
+                deletions = current_row[j] + 1
+                substitutions = previous_row[j] + (c1 != c2)
+                current_row.append(min(insertions, deletions, substitutions))
+            previous_row = current_row
+        
+        return previous_row[-1]
         
     def clean_text(self, text: str) -> str:
         """Clean and normalize text for comparison."""
@@ -244,26 +432,52 @@ class PDFSplitter:
         detected_forms = []
         matched_patterns = []
 
-        # Pass 0: Check for highly specific unique identifiers (Catalog numbers, unique EIN refs)
+        # Pass 0: Check for highly specific unique identifiers (Catalog numbers)
+        # Use FUZZY matching to handle OCR errors
         text_lower = text.lower()
         forced_form_type = None
-        unique_id_patterns = []
+        best_catalog_match = None
+        best_catalog_confidence = 0.0
         
         for form_type, patterns in self.unique_identifiers.items():
             for pattern in patterns:
-                match = re.search(pattern, text_lower)
-                if match:
-                    print(f"DEBUG: Found unique identifier '{pattern}' for {form_type}. Forcing form type.")
-                    forced_form_type = form_type
-                    unique_id_patterns.append(f"{form_type}:{pattern}")
-                    detected_forms.append((form_type, self.CONFIDENCE_UNIQUE_ID, 'unique_id'))
+                # Extract catalog number from regex pattern (remove \b and special regex chars)
+                catalog = pattern.strip(r'\b')
+                
+                # Skip complex regex patterns (those with parentheses for grouping)
+                if any(c in catalog for c in ['(', ')', '[', ']', '-']):
+                    # Fall back to exact regex match for complex patterns
+                    match = re.search(pattern, text_lower)
+                    if match:
+                        print(f"DEBUG: Found unique identifier (exact) '{pattern}' for {form_type}.")
+                        forced_form_type = form_type
+                        best_catalog_match = pattern
+                        best_catalog_confidence = self.CONFIDENCE_UNIQUE_ID
+                        break
+                else:
+                    # Use fuzzy matching for simple alphanumeric catalogs
+                    found, confidence, matched_variant = self.fuzzy_match_catalog(text_lower, catalog)
+                    if found:
+                        print(f"DEBUG: Found catalog '{catalog}' for {form_type} with confidence {confidence} (matched: '{matched_variant}')")
+                        forced_form_type = form_type
+                        best_catalog_match = f"{catalog}→{matched_variant}"
+                        best_catalog_confidence = confidence
+                        # Higher confidence = higher priority, stop if we found a high-confidence match
+                        if confidence >= 95:
+                            break
+            if forced_form_type and best_catalog_confidence >= 95:
+                break
 
         # Helper to build return value
         def build_result(matched_type, is_start, confidence, patterns, is_ambiguous=False, ambiguous=None):
-            # Use unique ID to override if found
-            final_type = forced_form_type if forced_form_type and matched_type not in ["OTHER", "CERTIFICATE"] else matched_type
-            if final_type != matched_type and matched_type not in ["OTHER", "CERTIFICATE"]:
-                print(f"DEBUG: Overriding matched type '{matched_type}' with forced type '{final_type}' based on secret code.")
+            # Use unique ID to override if found with good confidence
+            if forced_form_type and matched_type not in ["OTHER", "CERTIFICATE"] and best_catalog_confidence >= 70:
+                final_type = forced_form_type
+                if final_type != matched_type:
+                    print(f"DEBUG: Overriding matched type '{matched_type}' with forced type '{final_type}' based on catalog match (confidence: {best_catalog_confidence}).")
+                confidence = max(confidence, best_catalog_confidence)
+            else:
+                final_type = matched_type
             return (final_type, is_start, confidence, patterns, is_ambiguous, ambiguous or [])
 
         # First pass: Check for titles (Strong match) using flexible regex
@@ -285,8 +499,11 @@ class PDFSplitter:
             print(f"DEBUG: Found title pattern for {earliest_title_type} at idx {earliest_title_idx}")
             is_ambiguous = len(title_matches) > 1
             ambiguous = title_matches[1:] if is_ambiguous else []
-            return build_result(earliest_title_type, True, self.CONFIDENCE_TITLE, 
-                              [f"title:{earliest_title_type}"], is_ambiguous, ambiguous)
+            patterns_list = [f"title:{earliest_title_type}"]
+            if best_catalog_match:
+                patterns_list.insert(0, f"catalog:{best_catalog_match}")
+            return build_result(earliest_title_type, True, self.CONFIDENCE_TITLE,
+                              patterns_list, is_ambiguous, ambiguous)
 
         # Second pass: Check for 'Form X' fallbacks (Weak match) using flexible regex
         first_1000 = text[:1000].lower()
@@ -319,8 +536,11 @@ class PDFSplitter:
             print(f"DEBUG: Found '{earliest_match_type}' as the earliest form mention via flexible regex (idx: {earliest_match_idx}, is_start: {is_start})")
             if is_ambiguous:
                 print(f"DEBUG: Ambiguous page - also found: {ambiguous}")
+            patterns_list = [f"form_name:{earliest_match_type}"]
+            if best_catalog_match:
+                patterns_list.insert(0, f"catalog:{best_catalog_match}")
             return build_result(earliest_match_type, is_start, self.CONFIDENCE_FORM,
-                              [f"form_name:{earliest_match_type}"], is_ambiguous, ambiguous)
+                              patterns_list, is_ambiguous, ambiguous)
 
 
         # Third pass: Fuzzy Matching (Safety net for very bad OCR)
@@ -349,19 +569,28 @@ class PDFSplitter:
             score_title = fuzz.partial_ratio(title.lower(), first_1000)
             if score_title > 85:
                 print(f"DEBUG: Found title via fuzzy matching (Score: {score_title}) for {form_type}")
-                return build_result(form_type, True, self.CONFIDENCE_FUZZY, [f"fuzzy_title:{form_type}"])
+                patterns_list = [f"fuzzy_title:{form_type}"]
+                if best_catalog_match:
+                    patterns_list.insert(0, f"catalog:{best_catalog_match}")
+                return build_result(form_type, True, self.CONFIDENCE_FUZZY, patterns_list)
 
         if earliest_fuzzy_type:
             is_start = is_fuzzy_title_match or (earliest_fuzzy_idx < 300)
             is_ambiguous = len(set(fuzzy_matches)) > 1
             ambiguous = list(set(fuzzy_matches) - {earliest_fuzzy_type}) if is_ambiguous else []
             print(f"DEBUG: Found '{earliest_fuzzy_type}' as the earliest form mention via fuzzy matching (idx: {earliest_fuzzy_idx}, is_start: {is_start})")
+            patterns_list = [f"fuzzy:{earliest_fuzzy_type}"]
+            if best_catalog_match:
+                patterns_list.insert(0, f"catalog:{best_catalog_match}")
             return build_result(earliest_fuzzy_type, is_start, self.CONFIDENCE_FUZZY,
-                              [f"fuzzy:{earliest_fuzzy_type}"], is_ambiguous, ambiguous)
+                              patterns_list, is_ambiguous, ambiguous)
 
         # Check for certificates
         if self.certificate_pattern.search(text):
-            return build_result("CERTIFICATE", True, self.CONFIDENCE_CERTIFICATE, ["certificate_pattern"])
+            patterns_list = ["certificate_pattern"]
+            if best_catalog_match:
+                patterns_list.insert(0, f"catalog:{best_catalog_match}")
+            return build_result("CERTIFICATE", True, self.CONFIDENCE_CERTIFICATE, patterns_list)
 
         return build_result("OTHER", False, 50.0, [], False, [])
 
