@@ -8,7 +8,7 @@ import pytesseract
 from PIL import Image
 try:
     import cv2
-    import numpy as np
+    import numpy
     cv2.setNumThreads(4) # Force OpenCV to use multiple CPU cores for preprocessing
     cv2.setUseOptimized(True) # Force SIMD/Intel optimizations
 except ImportError:
@@ -41,14 +41,36 @@ class PageAnalysis:
     is_ambiguous: bool = False
     ambiguous_forms: List[str] = None
     reasoning: str = ''
+    page_info: str = None
+    form_structure_detected: bool = False
 
 class PDFSplitter:
-    # Confidence thresholds for different detection tiers
-    CONFIDENCE_UNIQUE_ID = 100.0   # Unique catalog number match
-    CONFIDENCE_TITLE = 95.0        # Full title pattern match
-    CONFIDENCE_FORM = 80.0         # Form name match
-    CONFIDENCE_FUZZY = 60.0        # Fuzzy match
-    CONFIDENCE_CERTIFICATE = 70.0  # Certificate pattern
+    """
+    PDF Splitter with LLM-powered classification.
+    
+    CLASSIFICATION MODES:
+    
+    1. LLM Mode (Primary, when use_llm=True):
+       - Sends FULL page text to GPT-4o mini (or custom LLM)
+       - LLM analyzes complete context holistically
+       - LLM decides document type based on structure, content, context
+       - NO hardcoded rules or priorities
+       - Confidence scores come from LLM (0-100%)
+       
+    2. Logic-Based Mode (Fallback, when LLM disabled):
+       - Uses regex patterns and fuzzy matching
+       - Confidence thresholds (for internal tracking only):
+         * Catalog match: 70-100% (fuzzy)
+         * Title match: 95%
+         * Form name: 80%
+         * Fuzzy match: 60%
+         * Certificate: 70%
+       - These are NOT used to influence LLM decisions
+    """
+    
+    # Confidence thresholds for logic-based detection (fallback only)
+    # These are NOT used when LLM classification is enabled
+    CONFIDENCE_CERTIFICATE = 70.0  # Certificate pattern (fallback)
     
     # OCR threshold settings
     OCR_TEXT_LENGTH_THRESHOLD = 100  # Trigger OCR if text < this
@@ -81,65 +103,56 @@ class PDFSplitter:
     }
     
     # LLM Configuration
-    LLM_FORM_SYSTEM_PROMPT = """You are an expert document classification assistant specialized in US tax forms. Your task is to analyze text extracted from PDF pages and accurately identify the form type.
+    LLM_FORM_SYSTEM_PROMPT = """You are an expert document classification assistant specialized in US tax forms and financial documents. Your task is to analyze the COMPLETE text from a PDF page and determine what type of document this page belongs to.
 
-AVAILABLE FORM TYPES (in priority order):
-1. W-8BEN: "Certificate of Foreign Status of Beneficial Owner for United States Tax Withholding and Reporting (Individuals)"
-   - Key identifiers: Catalog number 25047Z, "individuals", "beneficial owner", "foreign status"
-   - Typical length: 1 page
+AVAILABLE DOCUMENT TYPES:
+1. W-8BEN: Certificate of Foreign Status of Beneficial Owner (Individuals)
+2. W-8BEN-E: Certificate of Status of Beneficial Owner (Entities)  
+3. W-8EXP: Certificate of Foreign Government or Organization
+4. W-8IMY: Certificate of Foreign Intermediary
+5. W-9: Request for Taxpayer Identification Number
+6. CERTIFICATE: Any certificate document (award certificates, completion certificates, etc.)
+7. OTHER: Any other document (instructions, cover letters, supporting documents, etc.)
 
-2. W-8BEN-E: "Certificate of Status of Beneficial Owner for United States Tax Withholding and Reporting (Entities)"
-   - Key identifiers: Catalog number 59689N, "entities", "beneficial owner", "nonparticipating"
-   - Typical length: 8 pages
-   - IMPORTANT: Distinguish from W-8BEN by looking for "entities" vs "individuals"
+IMPORTANT CLASSIFICATION PRINCIPLES:
+1. **Context matters most**: A page that MENTIONS "W-9" in passing is NOT necessarily a W-9 form
+2. **Look at the document structure**: Forms have specific layouts with fields, checkboxes, signature lines
+3. **Check if this is the actual form or just references it**: Instructions, examples, or supporting documents may mention form names without being the form itself
+4. **Consider all evidence together**: Headers, footers, content density, presence of fillable fields, official form titles
+5. **Catalog numbers are ONE signal among many**: They can help but shouldn't override obvious contextual evidence
+6. **A certificate mentioning "W-9" is still a CERTIFICATE, not a W-9**
+7. **Instruction pages that explain how to fill out a form are OTHER, not the form itself**
 
-3. W-8EXP: "Certificate of Foreign Government or Other Foreign Organization for United States Tax Withholding and Reporting"
-   - Key identifiers: Catalog numbers 115(2), 1443(b), 897(l)-1(d), "foreign government"
-   - Typical length: 3 pages
+EXAMPLES:
+- A page with "Form W-9" at the top + fillable fields → W-9
+- A page saying "Please submit Form W-9 with your application" → OTHER (instructions)
+- A certificate that says "We certify the W-9 form is accurate" → CERTIFICATE (not W-9)
+- A page with "Catalog 25047Z" + "Certificate of Foreign Status" title → W-8BEN
+- A dense text page explaining tax withholding → OTHER (instructions)
 
-4. W-8IMY: "Certificate of Foreign Intermediary, Foreign Flow-Through Entity, or Certain U.S. Branches for United States Tax Withholding and Reporting"
-   - Key identifiers: Catalog number 25402Q, "intermediary", "qi-ein", "wp-ein", "wt-ein"
-   - Typical length: 8 pages
+You will receive the FULL text from one page. Analyze it holistically and return your classification as JSON."""
 
-5. W-9: "Request for Taxpayer Identification Number and Certification"
-   - Key identifiers: Catalog number 10231X, "1099-INT", "1099-MISC", "TIN", "EIN"
-   - Typical length: 1 or 6 pages (with instructions)
+    LLM_FORM_USER_TEMPLATE = """Analyze this COMPLETE text from page {page_num} of a PDF and classify what type of document this page is.
 
-6. CERTIFICATE: Any certificate document that doesn't match the above forms
-   - Look for words like "certificate", "certification", "certified"
-
-7. OTHER: Any document that doesn't match the above categories
-
-CLASSIFICATION RULES:
-1. Catalog numbers are the STRONGEST signal - if you see one, trust it above all else
-2. Form titles in headers are very strong signals
-3. Be careful of form instructions that mention other form types (e.g., W-8IMY instructions mention W-8BEN-E)
-4. Consider the overall document structure and layout
-5. OCR text may contain errors - use context to infer correct values (e.g., "25O47Z" is likely "25047Z")
-6. If the page contains multiple form references, identify which form this page BELONGS TO (not just mentions)
-
-You will receive text extracted from a single page. Return your classification as JSON."""
-
-    LLM_FORM_USER_TEMPLATE = """Analyze this text from page {page_num} of a PDF and classify the form type.
-
-TEXT EXTRACT (may contain OCR errors):
+FULL PAGE TEXT:
 ---
 {text}
 ---
 
 Respond with ONLY a valid JSON object in this exact format:
 {{
-    "form_type": "W-8BEN",
+    "document_type": "W-8BEN",
     "confidence": 0.95,
-    "reasoning": "Brief explanation of your decision",
+    "reasoning": "Explain your decision. What evidence did you use? Is this the actual form or just mentioning it?",
     "is_first_page": true,
-    "detected_catalog": "25047Z or null if not found",
-    "alternative_forms": ["W-8BEN-E"] if any, otherwise omit
+    "form_structure_detected": true,
+    "mentions_other_forms": ["W-8BEN-E"] if any, otherwise omit
 }}
 
-form_type must be one of: W-8BEN, W-8BEN-E, W-8EXP, W-8IMY, W-9, CERTIFICATE, OTHER
+document_type must be one of: W-8BEN, W-8BEN-E, W-8EXP, W-8IMY, W-9, CERTIFICATE, OTHER
 confidence should be between 0.0 and 1.0
-is_first_page should be true if this appears to be the first page of a multi-page form
+is_first_page should be true if this appears to be the first page of a multi-page document
+form_structure_detected should be true if the page has form fields, checkboxes, signature lines (vs. just prose text)
 """
     
     def __init__(self, ocr_engine="tesseract", use_llm=False, api_key=None, api_base=None, llm_model="gpt-4o-mini"):
@@ -383,10 +396,11 @@ is_first_page should be true if this appears to be the first page of a multi-pag
 
     def classify_page_with_llm(self, text: str, page_num: int) -> Optional[Dict]:
         """
-        Use LLM to classify a page based on its text content.
+        Use LLM to classify a page based on its COMPLETE text content.
+        The LLM will analyze the full context and decide what document type this page belongs to.
         
         Args:
-            text: Extracted text from the page
+            text: Extracted text from the page (full text, no truncation)
             page_num: Page number (0-indexed)
         
         Returns:
@@ -396,12 +410,13 @@ is_first_page should be true if this appears to be the first page of a multi-pag
             return None
         
         try:
-            # Truncate text to avoid token limits (leave room for prompt + response)
-            # GPT-4o-mini has 128K context, but we'll be conservative
-            max_text_length = 10000
-            if len(text) > max_text_length:
-                # Keep beginning and end, which usually has the most important info
-                text = text[:max_text_length // 2] + "\n...[truncated]...\n" + text[-max_text_length // 2:]
+            # Send FULL page text - no truncation
+            # LLM should see complete context to make informed decision
+            # Note: We still have a safety limit for extremely large pages
+            max_safety_limit = 50000  # 50K chars = ~12.5K tokens, well within GPT-4o-mini's 128K limit
+            if len(text) > max_safety_limit:
+                print(f"Warning: Page {page_num} has {len(text)} chars, truncating to {max_safety_limit}")
+                text = text[:max_safety_limit] + "\n...[truncated due to extreme length]..."
             
             # Build the prompt
             user_prompt = self.LLM_FORM_USER_TEMPLATE.format(
@@ -423,7 +438,8 @@ is_first_page should be true if this appears to be the first page of a multi-pag
                     }
                 ],
                 temperature=0.1,  # Low temperature for consistency
-                max_tokens=400
+                max_tokens=400,
+                timeout=60  # Longer timeout for large pages
             )
             
             # Parse the response
@@ -431,7 +447,7 @@ is_first_page should be true if this appears to be the first page of a multi-pag
             response_text = response.choices[0].message.content.strip()
             
             # Try to extract JSON from the response
-            # Handle cases where LLM adds markdown code blocks
+            # Handle cases where LLM adds markdown code blocks or extra text
             if response_text.startswith("```"):
                 # Remove markdown code block if present
                 lines = response_text.split("\n")
@@ -441,7 +457,7 @@ is_first_page should be true if this appears to be the first page of a multi-pag
                     lines = lines[:-1]
                 response_text = "\n".join(lines)
             
-            # Find JSON in response (in case there's extra text)
+            # Find JSON in response (in case there's extra text before/after)
             json_start = response_text.find("{")
             json_end = response_text.rfind("}") + 1
             if json_start >= 0 and json_end > json_start:
@@ -450,44 +466,46 @@ is_first_page should be true if this appears to be the first page of a multi-pag
             result = json.loads(response_text)
             
             # Map LLM response to our format
-            form_type = result.get("form_type", "OTHER").upper()
+            document_type = result.get("document_type", "OTHER").upper()
             confidence = float(result.get("confidence", 0.5)) * 100
             reasoning = result.get("reasoning", "LLM classification")
             is_first_page = result.get("is_first_page", False)
-            detected_catalog = result.get("detected_catalog")
-            alternative_forms = result.get("alternative_forms", [])
+            form_structure_detected = result.get("form_structure_detected", False)
+            mentions_other_forms = result.get("mentions_other_forms", [])
             
-            # Validate form type
+            # Validate document type
             valid_types = ["W-8BEN", "W-8BEN-E", "W-8EXP", "W-8IMY", "W-9", "CERTIFICATE", "OTHER"]
-            if form_type not in valid_types:
-                print(f"Warning: LLM returned invalid form_type '{form_type}', defaulting to OTHER")
-                form_type = "OTHER"
+            if document_type not in valid_types:
+                print(f"Warning: LLM returned invalid document_type '{document_type}', defaulting to OTHER")
+                document_type = "OTHER"
             
             # Build patterns list
-            patterns = [f"llm:{form_type}"]
-            if detected_catalog:
-                patterns.append(f"llm_catalog:{detected_catalog}")
+            patterns = [f"llm:{document_type}"]
+            if form_structure_detected:
+                patterns.append("llm_form_structure:true")
+            if mentions_other_forms:
+                patterns.append(f"llm_mentions:{','.join(mentions_other_forms)}")
             
             # Check for ambiguity
-            is_ambiguous = len(alternative_forms) > 0
+            is_ambiguous = len(mentions_other_forms) > 0 and document_type != "OTHER"
             
             return {
-                'form_type': form_type,
+                'form_type': document_type,
                 'confidence': confidence,
                 'reasoning': reasoning,
                 'is_start_page': is_first_page,
                 'matched_patterns': patterns,
                 'is_ambiguous': is_ambiguous,
-                'ambiguous_forms': alternative_forms,
-                'detected_catalog': detected_catalog,
+                'ambiguous_forms': mentions_other_forms if is_ambiguous else [],
+                'form_structure_detected': form_structure_detected,
                 'method': 'llm'
             }
             
         except json.JSONDecodeError as e:
-            print(f"LLM response parsing error: {e}. Response: {response_text}")
+            print(f"LLM response parsing error: {e}. Response: {response_text[:200]}...")
             return None
         except Exception as e:
-            print(f"LLM classification error: {e}")
+            print(f"LLM classification error: {type(e).__name__}: {e}")
             return None
 
     def clean_text(self, text: str) -> str:
@@ -657,7 +675,7 @@ is_first_page should be true if this appears to be the first page of a multi-pag
                         print(f"DEBUG: Found unique identifier (exact) '{pattern}' for {form_type}.")
                         forced_form_type = form_type
                         best_catalog_match = pattern
-                        best_catalog_confidence = self.CONFIDENCE_UNIQUE_ID
+                        best_catalog_confidence = 100.0  # Exact match = high confidence
                         break
                 else:
                     # Use fuzzy matching for simple alphanumeric catalogs
@@ -698,7 +716,7 @@ is_first_page should be true if this appears to be the first page of a multi-pag
                     earliest_title_idx = match.start()
                     earliest_title_type = form_type
                     title_matches.append(form_type)
-                    detected_forms.append((form_type, self.CONFIDENCE_TITLE, 'title'))
+                    detected_forms.append((form_type, 95.0, 'title'))  # Title match = 95% confidence
 
         if earliest_title_type:
             print(f"DEBUG: Found title pattern for {earliest_title_type} at idx {earliest_title_idx}")
@@ -707,7 +725,7 @@ is_first_page should be true if this appears to be the first page of a multi-pag
             patterns_list = [f"title:{earliest_title_type}"]
             if best_catalog_match:
                 patterns_list.insert(0, f"catalog:{best_catalog_match}")
-            return build_result(earliest_title_type, True, self.CONFIDENCE_TITLE,
+            return build_result(earliest_title_type, True, 95.0,  # Title match confidence
                               patterns_list, is_ambiguous, ambiguous)
 
         # Second pass: Check for 'Form X' fallbacks (Weak match) using flexible regex
@@ -726,7 +744,7 @@ is_first_page should be true if this appears to be the first page of a multi-pag
                     earliest_match_idx = match_form.start()
                     earliest_match_type = form_type
                 form_matches.append(form_type)
-                detected_forms.append((form_type, self.CONFIDENCE_FORM, 'form_name'))
+                detected_forms.append((form_type, 80.0, 'form_name'))  # Form name match = 80% confidence
 
             match_standalone = re.search(rf'\b{regex_str}\b', first_1000, re.IGNORECASE)
             if match_standalone:
@@ -744,7 +762,7 @@ is_first_page should be true if this appears to be the first page of a multi-pag
             patterns_list = [f"form_name:{earliest_match_type}"]
             if best_catalog_match:
                 patterns_list.insert(0, f"catalog:{best_catalog_match}")
-            return build_result(earliest_match_type, is_start, self.CONFIDENCE_FORM,
+            return build_result(earliest_match_type, is_start, 80.0,  # Form name confidence
                               patterns_list, is_ambiguous, ambiguous)
 
 
@@ -769,7 +787,7 @@ is_first_page should be true if this appears to be the first page of a multi-pag
                     earliest_fuzzy_type = form_type
                     is_fuzzy_title_match = False
                 fuzzy_matches.append(form_type)
-                detected_forms.append((form_type, self.CONFIDENCE_FUZZY, 'fuzzy'))
+                detected_forms.append((form_type, 60.0, 'fuzzy'))  # Fuzzy match = 60% confidence
 
             score_title = fuzz.partial_ratio(title.lower(), first_1000)
             if score_title > 85:
@@ -777,7 +795,7 @@ is_first_page should be true if this appears to be the first page of a multi-pag
                 patterns_list = [f"fuzzy_title:{form_type}"]
                 if best_catalog_match:
                     patterns_list.insert(0, f"catalog:{best_catalog_match}")
-                return build_result(form_type, True, self.CONFIDENCE_FUZZY, patterns_list)
+                return build_result(form_type, True, 60.0, patterns_list)  # Fuzzy title confidence
 
         if earliest_fuzzy_type:
             is_start = is_fuzzy_title_match or (earliest_fuzzy_idx < 300)
@@ -787,7 +805,7 @@ is_first_page should be true if this appears to be the first page of a multi-pag
             patterns_list = [f"fuzzy:{earliest_fuzzy_type}"]
             if best_catalog_match:
                 patterns_list.insert(0, f"catalog:{best_catalog_match}")
-            return build_result(earliest_fuzzy_type, is_start, self.CONFIDENCE_FUZZY,
+            return build_result(earliest_fuzzy_type, is_start, 60.0,  # Fuzzy match confidence
                               patterns_list, is_ambiguous, ambiguous)
 
         # Check for certificates
@@ -795,7 +813,7 @@ is_first_page should be true if this appears to be the first page of a multi-pag
             patterns_list = ["certificate_pattern"]
             if best_catalog_match:
                 patterns_list.insert(0, f"catalog:{best_catalog_match}")
-            return build_result("CERTIFICATE", True, self.CONFIDENCE_CERTIFICATE, patterns_list)
+            return build_result("CERTIFICATE", True, 70.0, patterns_list)  # Certificate confidence
 
         return build_result("OTHER", False, 50.0, [], False, [])
 
@@ -848,7 +866,9 @@ is_first_page should be true if this appears to be the first page of a multi-pag
                 matched_patterns=llm_result['matched_patterns'],
                 is_ambiguous=llm_result['is_ambiguous'],
                 ambiguous_forms=llm_result.get('ambiguous_forms', []),
-                reasoning=llm_result.get('reasoning', '')
+                reasoning=llm_result.get('reasoning', ''),
+                page_info=None,
+                form_structure_detected=llm_result.get('form_structure_detected', False)
             )
         else:
             # Fall back to logic-based classification
@@ -864,7 +884,9 @@ is_first_page should be true if this appears to be the first page of a multi-pag
                 matched_patterns=patterns,
                 is_ambiguous=is_ambiguous,
                 ambiguous_forms=ambiguous_forms or [],
-                reasoning=''
+                reasoning='',
+                page_info=None,
+                form_structure_detected=False
             )
 
     def analyze_pages_parallel(self, pdf_document, max_workers: int = 4) -> List[PageAnalysis]:
@@ -899,7 +921,9 @@ is_first_page should be true if this appears to be the first page of a multi-pag
                         matched_patterns=[],
                         is_ambiguous=False,
                         ambiguous_forms=None,
-                        reasoning=''
+                        reasoning='',
+                        page_info=None,
+                        form_structure_detected=False
                     )
             
             # Convert to ordered list
@@ -984,7 +1008,8 @@ is_first_page should be true if this appears to be the first page of a multi-pag
                     'ambiguous_forms': analysis.ambiguous_forms or [],
                     'matched_patterns': analysis.matched_patterns,
                     'method': 'llm' if any('llm' in p for p in analysis.matched_patterns) else 'logic',
-                    'reasoning': analysis.reasoning
+                    'reasoning': analysis.reasoning,
+                    'form_structure_detected': analysis.form_structure_detected
                 }
 
             current_doc['pages'].append(page_num)
@@ -1059,6 +1084,40 @@ is_first_page should be true if this appears to be the first page of a multi-pag
     def get_ambiguous_documents(self, documents: List[Dict]) -> List[Dict]:
         """Return documents that contain ambiguous pages."""
         return [doc for doc in documents if doc.get('is_ambiguous', False)]
+
+    def get_llm_statistics(self, documents: List[Dict]) -> Dict:
+        """
+        Get statistics about LLM usage for a batch of documents.
+        
+        Returns:
+            Dictionary with LLM usage statistics
+        """
+        total_pages = sum(len(doc['pages']) for doc in documents)
+        llm_pages = sum(len(doc['pages']) for doc in documents if doc.get('method') == 'llm')
+        logic_pages = total_pages - llm_pages
+        
+        # Calculate average confidence
+        llm_docs = [doc for doc in documents if doc.get('method') == 'llm']
+        avg_llm_confidence = sum(doc.get('confidence', 0) for doc in llm_docs) / len(llm_docs) if llm_docs else 0
+        
+        logic_docs = [doc for doc in documents if doc.get('method') == 'logic']
+        avg_logic_confidence = sum(doc.get('confidence', 0) for doc in logic_docs) / len(logic_docs) if logic_docs else 0
+        
+        # Estimate tokens (rough estimate: 1 token ≈ 4 chars)
+        total_chars = sum(len(doc.get('text', '')) for doc in documents)
+        estimated_tokens = total_chars // 4
+        
+        return {
+            'total_documents': len(documents),
+            'total_pages': total_pages,
+            'llm_pages': llm_pages,
+            'logic_pages': logic_pages,
+            'llm_percentage': (llm_pages / total_pages * 100) if total_pages > 0 else 0,
+            'avg_llm_confidence': avg_llm_confidence,
+            'avg_logic_confidence': avg_logic_confidence,
+            'estimated_tokens': estimated_tokens,
+            'estimated_cost_gpt4o_mini': estimated_tokens * 0.00000015  # $0.15 per 1M tokens
+        }
 
 def main():
     # You can change to "easyocr" to test locally
