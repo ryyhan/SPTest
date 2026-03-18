@@ -106,31 +106,34 @@ class PDFSplitter:
     LLM_FORM_SYSTEM_PROMPT = """You are an expert document classification assistant specialized in US tax forms and financial documents. Your task is to analyze the COMPLETE text from a PDF page and determine what type of document this page belongs to.
 
 AVAILABLE DOCUMENT TYPES:
-1. W-8BEN: Certificate of Foreign Status of Beneficial Owner (Individuals)
-2. W-8BEN-E: Certificate of Status of Beneficial Owner (Entities)  
-3. W-8EXP: Certificate of Foreign Government or Organization
-4. W-8IMY: Certificate of Foreign Intermediary
-5. W-9: Request for Taxpayer Identification Number
-6. CERTIFICATE: Any certificate document (award certificates, completion certificates, etc.)
-7. OTHER: Any other document (instructions, cover letters, supporting documents, etc.)
+1. W-8BEN: Certificate of Foreign Status of Beneficial Owner (Individuals) - must have form fields
+2. W-8BEN-E: Certificate of Status of Beneficial Owner (Entities) - must have form fields
+3. W-8EXP: Certificate of Foreign Government or Organization - must have form fields
+4. W-8IMY: Certificate of Foreign Intermediary - must have form fields
+5. W-9: Request for Taxpayer Identification Number - must have form fields
+6. CERTIFICATE: Award certificates, completion certificates, certification letters (no form fields)
+7. OTHER: Everything else - instructions, cover letters, tax statements, withholding notifications, supporting documents
 
-IMPORTANT CLASSIFICATION PRINCIPLES:
-1. **Context matters most**: A page that MENTIONS "W-9" in passing is NOT necessarily a W-9 form
-2. **Look at the document structure**: Forms have specific layouts with fields, checkboxes, signature lines
-3. **Check if this is the actual form or just references it**: Instructions, examples, or supporting documents may mention form names without being the form itself
-4. **Consider all evidence together**: Headers, footers, content density, presence of fillable fields, official form titles
-5. **Catalog numbers are ONE signal among many**: They can help but shouldn't override obvious contextual evidence
-6. **A certificate mentioning "W-9" is still a CERTIFICATE, not a W-9**
-7. **Instruction pages that explain how to fill out a form are OTHER, not the form itself**
+CRITICAL CLASSIFICATION RULES:
+1. **WITHHOLDING STATEMENTS ARE ALWAYS "OTHER"**: Any page that is a withholding statement, tax notification, payment advice, or beneficial owner statement should be classified as OTHER, EVEN IF it mentions being "attached to" or "part of" a W-8 form
+2. **Forms MUST have fillable fields**: A page is ONLY a W-8 form if it has blank lines to fill, checkboxes, signature blocks with "Sign Here" instructions
+3. **Prose text = NOT a form**: Pages with paragraphs of text, even if titled "Statement" or "Certificate", are NOT tax forms
+4. **"Part of" doesn't mean same type**: A withholding statement that says "This is part of Form W-8IMY" is STILL classified as OTHER, not W-8IMY
+5. **Each page type is a separate document**: Withholding statements, forms, and certificates should each be their own document type
+6. **Look for form structure**: Actual forms have: "☐" checkboxes, "________" fill lines, "Signature" blocks, "Date" fields
 
 EXAMPLES:
-- A page with "Form W-9" at the top + fillable fields → W-9
-- A page saying "Please submit Form W-9 with your application" → OTHER (instructions)
-- A certificate that says "We certify the W-9 form is accurate" → CERTIFICATE (not W-9)
-- A page with "Catalog 25047Z" + "Certificate of Foreign Status" title → W-8BEN
-- A dense text page explaining tax withholding → OTHER (instructions)
+- "Withholding Statement" + mentions W-8IMY + no form fields → OTHER (NOT W-8IMY)
+- "This statement is attached to Form W-8IMY" → OTHER (the statement itself is not the form)
+- "Notification of withholding for W-8BEN" → OTHER (NOT W-8BEN)
+- "Form W-8IMY" + fillable fields + signature → W-8IMY
+- "Beneficial Owner Statement" + prose text → OTHER or CERTIFICATE
+- "We certify..." + no form fields → CERTIFICATE
+- Dense legal text about tax treaties → OTHER (instructions)
 
-You will receive the FULL text from one page. Analyze it holistically and return your classification as JSON."""
+You will receive the FULL text from one page. Analyze it holistically and return your classification as JSON.
+
+REMEMBER: When in doubt, classify prose/text-heavy pages as OTHER. Only classify as W-8 forms if the page has actual form fields to fill out."""
 
     LLM_FORM_USER_TEMPLATE = """Analyze this COMPLETE text from page {page_num} of a PDF and classify what type of document this page is.
 
@@ -143,7 +146,7 @@ Respond with ONLY a valid JSON object in this exact format:
 {{
     "document_type": "W-8BEN",
     "confidence": 0.95,
-    "reasoning": "Explain your decision. What evidence did you use? Is this the actual form or just mentioning it?",
+    "reasoning": "Explain: Does this have form fields (checkboxes, fill lines, signature)? Or is it prose text? If it mentions a form but has no fields, classify as OTHER.",
     "is_first_page": true,
     "form_structure_detected": true,
     "mentions_other_forms": ["W-8BEN-E"] if any, otherwise omit
@@ -152,7 +155,13 @@ Respond with ONLY a valid JSON object in this exact format:
 document_type must be one of: W-8BEN, W-8BEN-E, W-8EXP, W-8IMY, W-9, CERTIFICATE, OTHER
 confidence should be between 0.0 and 1.0
 is_first_page should be true if this appears to be the first page of a multi-page document
-form_structure_detected should be true if the page has form fields, checkboxes, signature lines (vs. just prose text)
+form_structure_detected should be true ONLY if the page has form fields, checkboxes, signature lines (NOT just prose text)
+
+CRITICAL: 
+- Withholding statements = OTHER (even if they say "part of Form W-8...")
+- Tax notifications = OTHER
+- Beneficial owner statements without form fields = OTHER
+- ONLY pages with fillable form fields = W-8 forms
 """
     
     def __init__(self, ocr_engine="tesseract", use_llm=False, api_key=None, api_base=None, llm_model="gpt-4o-mini"):
@@ -852,6 +861,11 @@ form_structure_detected should be true if the page has form fields, checkboxes, 
         llm_result = None
         if self.use_llm and self.client:
             llm_result = self.classify_page_with_llm(text, page_num)
+            if llm_result:
+                print(f"✓ Page {page_num}: LLM classified as {llm_result['form_type']} (confidence: {llm_result['confidence']:.0f}%)")
+                print(f"  Reasoning: {llm_result['reasoning'][:150]}...")
+            else:
+                print(f"⚠ Page {page_num}: LLM failed, falling back to logic-based classification")
 
         if llm_result:
             # Use LLM result
@@ -873,6 +887,7 @@ form_structure_detected should be true if the page has form fields, checkboxes, 
         else:
             # Fall back to logic-based classification
             form_type, is_start, confidence, patterns, is_ambiguous, ambiguous_forms = self.identify_form_type(text)
+            print(f"→ Page {page_num}: Logic classified as {form_type} (confidence: {confidence:.0f}%)")
             return PageAnalysis(
                 page_num=page_num,
                 text=text,
