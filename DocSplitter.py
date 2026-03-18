@@ -40,6 +40,7 @@ class PageAnalysis:
     matched_patterns: List[str]
     is_ambiguous: bool = False
     ambiguous_forms: List[str] = None
+    reasoning: str = ''
 
 class PDFSplitter:
     # Confidence thresholds for different detection tiers
@@ -828,12 +829,12 @@ is_first_page should be true if this appears to be the first page of a multi-pag
     def analyze_page(self, page_num: int, page) -> PageAnalysis:
         """Analyze a single page and return structured analysis."""
         text, ocr_metadata = self.extract_text_from_page(page)
-        
+
         # Try LLM classification first if enabled
         llm_result = None
         if self.use_llm and self.client:
             llm_result = self.classify_page_with_llm(text, page_num)
-        
+
         if llm_result:
             # Use LLM result
             return PageAnalysis(
@@ -846,7 +847,8 @@ is_first_page should be true if this appears to be the first page of a multi-pag
                 text_length=len(text),
                 matched_patterns=llm_result['matched_patterns'],
                 is_ambiguous=llm_result['is_ambiguous'],
-                ambiguous_forms=llm_result.get('ambiguous_forms', [])
+                ambiguous_forms=llm_result.get('ambiguous_forms', []),
+                reasoning=llm_result.get('reasoning', '')
             )
         else:
             # Fall back to logic-based classification
@@ -861,7 +863,8 @@ is_first_page should be true if this appears to be the first page of a multi-pag
                 text_length=len(text),
                 matched_patterns=patterns,
                 is_ambiguous=is_ambiguous,
-                ambiguous_forms=ambiguous_forms or []
+                ambiguous_forms=ambiguous_forms or [],
+                reasoning=''
             )
 
     def analyze_pages_parallel(self, pdf_document, max_workers: int = 4) -> List[PageAnalysis]:
@@ -895,7 +898,8 @@ is_first_page should be true if this appears to be the first page of a multi-pag
                         text_length=0,
                         matched_patterns=[],
                         is_ambiguous=False,
-                        ambiguous_forms=None
+                        ambiguous_forms=None,
+                        reasoning=''
                     )
             
             # Convert to ordered list
@@ -977,7 +981,10 @@ is_first_page should be true if this appears to be the first page of a multi-pag
                     'text': analysis.text,
                     'confidence': analysis.confidence,
                     'is_ambiguous': analysis.is_ambiguous,
-                    'ambiguous_forms': analysis.ambiguous_forms or []
+                    'ambiguous_forms': analysis.ambiguous_forms or [],
+                    'matched_patterns': analysis.matched_patterns,
+                    'method': 'llm' if any('llm' in p for p in analysis.matched_patterns) else 'logic',
+                    'reasoning': analysis.reasoning
                 }
 
             current_doc['pages'].append(page_num)
