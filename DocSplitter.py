@@ -147,14 +147,20 @@ Respond with ONLY a valid JSON object in this exact format:
     "document_type": "W-8BEN",
     "confidence": 0.95,
     "reasoning": "Explain: Does this have form fields (checkboxes, fill lines, signature)? Or is it prose text? If it mentions a form but has no fields, classify as OTHER.",
-    "is_first_page": true,
+    "is_first_page": false,
     "form_structure_detected": true,
     "mentions_other_forms": ["W-8BEN-E"] if any, otherwise omit
 }}
 
 document_type must be one of: W-8BEN, W-8BEN-E, W-8EXP, W-8IMY, W-9, CERTIFICATE, OTHER
 confidence should be between 0.0 and 1.0
-is_first_page should be true if this appears to be the first page of a multi-page document
+
+is_first_page rules (CRITICAL - read carefully):
+- Set to TRUE **ONLY** if this is page 1 of a multi-page document (look for "Page 1 of X" or if it's the form title page)
+- Set to FALSE if this is a continuation page (Page 2+, or if the page says "Part II", "Section B", etc.)
+- Set to FALSE for single-page documents
+- When in doubt, set to FALSE
+
 form_structure_detected should be true ONLY if the page has form fields, checkboxes, signature lines (NOT just prose text)
 
 CRITICAL: 
@@ -162,6 +168,7 @@ CRITICAL:
 - Tax notifications = OTHER
 - Beneficial owner statements without form fields = OTHER
 - ONLY pages with fillable form fields = W-8 forms
+- is_first_page = TRUE only for the FIRST page of a multi-page document
 """
     
     def __init__(self, ocr_engine="tesseract", use_llm=False, api_key=None, api_base=None, llm_model="gpt-4o-mini"):
@@ -975,7 +982,7 @@ CRITICAL:
             form_type = analysis.form_type
             is_start_page = analysis.is_start_page
             page_num = analysis.page_num
-            
+
             start_new = False
 
             if current_doc is None:
@@ -984,28 +991,35 @@ CRITICAL:
                 current_type = current_doc['type']
                 current_len = len(current_doc['pages'])
 
-                # Check if we are currently building a form with known strict length rules
-                if current_type in self.form_rules:
+                # Different form type always starts a new document
+                if form_type != current_type:
+                    start_new = True
+                # Same type but different category (form vs OTHER vs CERTIFICATE)
+                elif form_type == "OTHER" or current_type == "OTHER":
+                    # OTHER documents: Start new if content is different
+                    # For now, be conservative and group consecutive OTHER pages
+                    start_new = False
+                elif form_type == "CERTIFICATE" or current_type == "CERTIFICATE":
+                    # Each certificate is typically a separate document
+                    start_new = True
+                # Same form type - check if we should split
+                elif current_type in self.form_rules:
+                    # Has strict page count rules
                     allowed_counts = self.form_rules[current_type]
                     max_count = max(allowed_counts)
 
-                    if current_len < max_count:
-                        # We have NOT reached the maximum allowed length for this form yet.
-                        if current_len in allowed_counts and is_start_page and form_type != "OTHER" and form_type != current_type:
-                            start_new = True
-                        else:
-                            # Blindly absorb page
-                            start_new = False
-                    else:
+                    if current_len >= max_count:
                         # Hit max length, force new doc
                         start_new = True
-
-                else:
-                    # No strict length rules
-                    if is_start_page and form_type != "OTHER" and form_type != current_type:
+                    elif current_len in allowed_counts and is_start_page:
+                        # At a valid stopping point AND new page claims to be first
                         start_new = True
                     else:
+                        # Continue absorbing pages of same type
                         start_new = False
+                else:
+                    # No strict rules, continue grouping same type
+                    start_new = False
 
             if start_new:
                 if current_doc is not None:
