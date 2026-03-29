@@ -27,7 +27,8 @@ def main():
         [
             "RapidOCR (Fastest, excellent accuracy on CPU)",
             "Tesseract (Fast, best for standard forms)",
-            "EasyOCR (Better for skewed images/poor quality, but slow)"
+            "EasyOCR (Better for skewed images/poor quality, but slow)",
+            "LLM Vision (GPT-4o - Most accurate, requires API key, slower)"
         ]
     )
 
@@ -36,9 +37,9 @@ def main():
         use_parallel = st.checkbox("Enable parallel processing (faster)", value=True)
         max_workers = st.slider("Number of worker threads", 1, 8, 4)
         show_debug = st.checkbox("Show debug information", value=False)
-        
+
         st.divider()
-        
+
         # LLM Classification Option
         st.subheader("🤖 AI-Powered Classification")
         use_llm = st.checkbox(
@@ -47,7 +48,11 @@ def main():
             help="Use GPT-4o mini to classify pages. More accurate but slower than rule-based detection."
         )
         
-        if use_llm:
+        # LLM OCR Option
+        use_llm_ocr = "LLM Vision" in engine_choice
+        
+        # Show API configuration if either LLM feature is enabled
+        if use_llm or use_llm_ocr:
             api_key = st.text_input(
                 "API Key",
                 type="password",
@@ -58,20 +63,55 @@ def main():
                 placeholder="https://api.openai.com/v1",
                 help="Custom API endpoint (e.g., your company's LLM gateway)"
             )
+            
+            # Azure OpenAI Configuration
+            st.markdown("**Azure OpenAI Configuration** (optional)")
+            use_azure = st.checkbox(
+                "Use Azure OpenAI",
+                value=False,
+                help="Enable if you're using Azure OpenAI Service"
+            )
+            
+            if use_azure:
+                azure_deployment = st.text_input(
+                    "Azure Deployment Name",
+                    placeholder="gpt-4o",
+                    help="Your Azure OpenAI deployment name"
+                )
+                azure_endpoint = st.text_input(
+                    "Azure Endpoint",
+                    placeholder="https://your-resource.openai.azure.com/",
+                    help="Your Azure OpenAI endpoint URL"
+                )
+                azure_api_version = st.text_input(
+                    "Azure API Version",
+                    value="2024-02-15-preview",
+                    help="Azure API version"
+                )
+            else:
+                azure_deployment = None
+                azure_endpoint = None
+                azure_api_version = None
+            
             llm_model = st.text_input(
                 "Model Name",
-                value="gpt-4o-mini",
-                help="The LLM model to use (e.g., gpt-4o-mini)"
+                value="gpt-4o",
+                help="The LLM model to use (e.g., gpt-4o for OCR, gpt-4o-mini for classification)"
             )
         else:
             api_key = None
             api_base = None
-            llm_model = "gpt-4o-mini"
+            llm_model = "gpt-4o"
+            azure_deployment = None
+            azure_endpoint = None
+            azure_api_version = None
 
     if "RapidOCR" in engine_choice:
         ocr_engine = "rapidocr"
     elif "EasyOCR" in engine_choice:
         ocr_engine = "easyocr"
+    elif "LLM Vision" in engine_choice:
+        ocr_engine = "llm"
     else:
         ocr_engine = "tesseract"
 
@@ -97,9 +137,13 @@ def main():
                 splitter = PDFSplitter(
                     ocr_engine=ocr_engine,
                     use_llm=use_llm,
-                    api_key=api_key if use_llm else None,
-                    api_base=api_base if use_llm else None,
-                    llm_model=llm_model
+                    use_llm_ocr=use_llm_ocr,
+                    api_key=api_key if (use_llm or use_llm_ocr) else None,
+                    api_base=api_base if (use_llm or use_llm_ocr) else None,
+                    llm_model=llm_model,
+                    azure_deployment=azure_deployment,
+                    azure_endpoint=azure_endpoint,
+                    azure_api_version=azure_api_version
                 )
 
                 # Create output directory (persistent)

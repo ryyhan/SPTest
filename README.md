@@ -1,23 +1,36 @@
 # Smart PDF Splitter
 
-A Streamlit-based application for automatically splitting a single PDF containing multiple mixed documents (e.g., Tax Forms, Certificates) into separate PDF files.
+A Streamlit-based application for automatically splitting a single PDF containing multiple mixed documents (e.g., Tax Forms, Certificates) into separate PDF files using AI-powered classification and OCR.
 
-## Features
+## ✨ Features
 
-- **Automatic Document Detection**: Identifies different form types (W-9, W-8BEN, W-8BEN-E, W-8EXP, W-8IMY) and separates them.
-- **Multi-Engine OCR Support**: 
-  - **RapidOCR** (default, fastest, excellent accuracy on CPU)
-  - **Tesseract** (fast, best for standard forms)
-  - **EasyOCR** (better for skewed images/poor quality, slower)
-- **🤖 AI-Powered Classification (Optional)**: Use GPT-4o mini or other LLMs for higher accuracy classification.
-- **Fuzzy Catalog Matching**: Detects form catalog numbers even with OCR errors (e.g., "25O47z" → "25047z").
-- **Confidence Scoring**: Each detected form includes a confidence score (0-100%) to flag uncertain detections.
-- **Ambiguity Detection**: Warns when a page contains multiple form types.
-- **Parallel Processing**: Multi-threaded page analysis for faster processing.
-- **Smart Page Grouping**: Groups pages by form type with configurable page count rules.
-- **Downloadable Results**: Provides download links for each extracted document.
+### Document Intelligence
+- **Automatic Document Detection**: Identifies different form types (W-9, W-8BEN, W-8BEN-E, W-8EXP, W-8IMY) and separates them
+- **🤖 AI-Powered Classification**: Use GPT-4o mini for intelligent document classification
+- **👁️ LLM Vision OCR**: Extract text from scanned documents using GPT-4o vision models (most accurate)
+- **Fuzzy Catalog Matching**: Detects form catalog numbers even with OCR errors (e.g., "25O47z" → "25047z")
+- **Confidence Scoring**: Each detected form includes a confidence score (0-100%) to flag uncertain detections
+- **Ambiguity Detection**: Warns when a page contains multiple form types
 
-## Installation
+### OCR Engine Options
+- **LLM Vision (GPT-4o)** ⭐: Most accurate, handles poor quality scans, requires API key
+- **RapidOCR** (default): Fastest with excellent CPU performance
+- **Tesseract**: Good for clean, standard forms
+- **EasyOCR**: Best for skewed images or poor quality scans
+
+### Performance
+- **Parallel Processing**: Multi-threaded page analysis for faster processing
+- **Smart Page Grouping**: Groups pages by form type with strict page count rules
+- **Fallback Chain**: Automatically falls back to traditional OCR if LLM fails
+
+### User Experience
+- **Downloadable Results**: Provides download links for each extracted document
+- **Quality Warnings**: Visual indicators for low confidence or ambiguous detections
+- **Debug Mode**: Show confidence scores, matched patterns, and reasoning
+
+---
+
+## 🚀 Installation
 
 ### 1. Clone the Repository
 
@@ -39,28 +52,17 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-**Optional: Install OpenAI for AI-Powered Classification**
+This installs all dependencies including LLM support. All features are available immediately.
 
-The LLM classification feature is optional. If you want to use it:
+### 4. Install Tesseract OCR (Required - Fallback)
 
-```bash
-pip install openai
-```
+Tesseract is required as a fallback OCR engine. Install it for your platform:
 
-Or simply:
-```bash
-pip install -r requirements.txt  # Includes openai
-```
-
-### 4. Install Tesseract OCR (Required)
-
-Tesseract is required for OCR functionality. Install it for your platform:
-
-- **macOS**: 
+- **macOS**:
   ```bash
   brew install tesseract
   ```
-- **Ubuntu/Debian**: 
+- **Ubuntu/Debian**:
   ```bash
   sudo apt-get install tesseract-ocr
   ```
@@ -74,7 +76,9 @@ For better OCR on poor quality or skewed documents:
 pip install easyocr
 ```
 
-## Usage
+---
+
+## 📖 Usage
 
 ### Running the Application
 
@@ -89,6 +93,7 @@ The web interface will open at `http://localhost:8501`.
 1. **Upload PDF**: Upload a PDF file containing multiple mixed documents.
 
 2. **Select OCR Engine**:
+   - **LLM Vision (GPT-4o)** ⭐: Most accurate, best for poor quality scans (requires API key)
    - **RapidOCR** (recommended): Fastest with excellent accuracy
    - **Tesseract**: Good for clean, standard forms
    - **EasyOCR**: Best for poor quality or skewed images
@@ -97,125 +102,286 @@ The web interface will open at `http://localhost:8501`.
    - **Parallel Processing**: Enable multi-threaded analysis (faster)
    - **Worker Threads**: Adjust number of threads (default: 4)
    - **Debug Mode**: Show confidence scores and matched patterns
-   - **🤖 AI-Powered Classification**: Enable LLM-based classification
-     - **API Key**: Your OpenAI or company LLM API key
-     - **API Base URL**: Custom endpoint (for company LLM gateway)
-     - **Model Name**: LLM model (default: gpt-4o-mini)
+   
+   - **🤖 AI-Powered Classification**: Enable LLM-based document classification
+     - Uses GPT-4o mini to classify pages based on content
+     - More accurate but slower than rule-based detection
+   
+   - **Azure OpenAI Configuration** (optional):
+     - Use Azure OpenAI Service instead of OpenAI
+     - Configure deployment name, endpoint, and API version
 
-4. **View Results**:
+4. **Provide API Key** (if using LLM features):
+   - Enter your OpenAI API key or Azure OpenAI key
+   - Optional: Custom API base URL for company LLM gateway
+
+5. **View Results**:
    - Documents are listed with detected form types
    - ⚠️ warnings indicate low confidence or ambiguous detections
    - 🤖 icon indicates pages classified by LLM
+   - 👁️ icon indicates pages processed with LLM Vision OCR
    - Click **Download PDF** to save each document
-
-### Command Line Usage
-
-You can also run the splitter directly from the command line:
-
-```bash
-python DocSplitter.py
-```
-
-Edit `DocSplitter.py` to change the input file and OCR engine.
 
 ---
 
-## 🤖 AI-Powered Classification
+## ⚙️ Advanced Configuration
 
-The application offers an optional AI-powered classification mode using LLMs (Large Language Models) for higher accuracy.
+### LLM Configuration File (`llm_config.py`)
 
-### How It Works
+All LLM settings are centralized in `llm_config.py` for easy customization.
 
-1. **Text Extraction**: OCR extracts text from each PDF page (same as logic-based mode)
-2. **LLM Analysis**: The full page text is sent to GPT-4o mini (or your company's LLM)
-3. **Classification**: The LLM identifies the form type based on:
-   - Catalog numbers (strongest signal)
-   - Form titles and headers
-   - Document structure and keywords
-   - Context and semantic understanding
-4. **Fallback**: If LLM fails, automatically falls back to logic-based detection
+**Quick Start:**
 
-### When to Use LLM Mode
+```python
+from llm_config import create_openai_config, create_azure_config
 
-**Use LLM when:**
-- ✅ Maximum accuracy is your priority
-- ✅ You have complex or unusual forms
+# Option 1: OpenAI Configuration
+config = create_openai_config(
+    api_key="sk-your-openai-key-here",
+    ocr_model="gpt-4o",              # Vision model for OCR
+    classification_model="gpt-4o-mini"  # Text model for classification
+)
+
+# Option 2: Azure OpenAI Configuration
+config = create_azure_config(
+    api_key="your-azure-key-here",
+    azure_deployment="gpt-4o",
+    azure_endpoint="https://my-resource.openai.azure.com/",
+    azure_api_version="2024-02-15-preview"
+)
+
+# Option 3: Custom Configuration
+from llm_config import LLMConfig
+
+config = LLMConfig(
+    api_key="your-key-here",
+    use_llm_ocr=True,
+    use_llm_classification=True,
+    ocr_model="gpt-4o",
+    ocr_image_zoom=2.0,              # Image zoom level (higher = better quality)
+    ocr_max_tokens=2000,             # Max tokens for OCR response
+    ocr_temperature=0.0,             # Keep low for consistency
+    classification_model="gpt-4o-mini",
+    verbose=True
+)
+```
+
+**Key Configuration Options:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `api_key` | str | None | OpenAI or Azure API key |
+| `use_azure` | bool | False | Use Azure OpenAI instead of OpenAI |
+| `azure_deployment` | str | None | Azure deployment name |
+| `azure_endpoint` | str | None | Azure endpoint URL |
+| `azure_api_version` | str | "2024-02-15-preview" | Azure API version |
+| `use_llm_ocr` | bool | False | Enable LLM-based OCR |
+| `ocr_model` | str | "gpt-4o" | Vision model for OCR |
+| `ocr_image_zoom` | float | 2.0 | Image zoom level (1.0-4.0) |
+| `ocr_image_detail` | str | "high" | Image detail ("low", "high", "auto") |
+| `ocr_max_tokens` | int | 2000 | Max tokens for OCR response |
+| `use_llm_classification` | bool | False | Enable LLM classification |
+| `classification_model` | str | "gpt-4o-mini" | Model for classification |
+| `verbose` | bool | True | Enable verbose logging |
+
+**Using Custom Config in Code:**
+
+```python
+from DocSplitter import PDFSplitter
+from llm_config import LLMConfig
+
+# Create custom configuration
+config = LLMConfig(
+    api_key="your-key-here",
+    use_llm_ocr=True,
+    use_llm_classification=True,
+    ocr_image_zoom=3.0,  # Higher quality OCR
+    verbose=True
+)
+
+# Initialize splitter with custom config
+splitter = PDFSplitter(
+    ocr_engine="llm",
+    llm_config=config
+)
+
+# Process PDF
+documents = splitter.split_pdf("input.pdf", "output/")
+```
+
+---
+
+## 🤖 AI Features
+
+### 1. LLM Vision OCR (New!)
+
+Extract text from scanned documents using GPT-4o vision models instead of traditional OCR.
+
+**When to use:**
+- ✅ Poor quality scans that traditional OCR struggles with
+- ✅ Complex layouts with mixed text and form fields
+- ✅ Maximum accuracy is required
+- ✅ You have access to API keys
+
+**How it works:**
+1. PDF page is converted to high-resolution image (2x zoom)
+2. Image is sent to GPT-4o Vision API
+3. LLM extracts all text with context understanding
+4. Falls back to traditional OCR if LLM fails
+
+**Configuration:**
+- Select **"LLM Vision"** as OCR engine
+- Provide OpenAI or Azure API key
+- Model: `gpt-4o` (recommended for vision)
+- Customize in `llm_config.py`: `ocr_image_zoom`, `ocr_max_tokens`, `ocr_system_prompt`
+
+### 2. LLM Classification
+
+Use GPT-4o mini to intelligently classify document types.
+
+**When to use:**
+- ✅ Complex or unusual forms
+- ✅ Documents with mixed content
 - ✅ OCR quality is poor (LLM can infer from context)
 - ✅ You have access to a company LLM gateway
 
-**Use Logic-Only when:**
-- ✅ Speed is important
-- ✅ Processing sensitive documents (don't send to external APIs)
-- ✅ Working offline
-- ✅ Standard forms with good OCR quality
+**How it works:**
+1. Text is extracted from each PDF page (via OCR or native)
+2. Full page text is sent to GPT-4o mini
+3. LLM analyzes content holistically and returns:
+   - Document type (W-8BEN, W-8BEN-E, etc.)
+   - Confidence score
+   - Reasoning explanation
+   - Whether it's the first page of a multi-page document
+4. Falls back to rule-based detection if LLM fails
 
-### Configuration
-
-**API Key**: Your OpenAI API key or company LLM API key
-
-**API Base URL** (optional): 
-- Leave blank for OpenAI: `https://api.openai.com/v1`
-- For company LLM: Your company's LLM gateway URL
-
-**Model Name** (optional):
-- Default: `gpt-4o-mini`
-- Other options: `gpt-4o`, `gpt-4-turbo`, or your company's model
-
-### Cost Estimate
-
-- **OpenAI GPT-4o mini**: ~$0.00015 per page (100 pages = ~$0.015)
-- **Company LLM**: Check with your team for internal pricing
-
-### Example LLM Response
-
-```json
-{
-    "form_type": "W-8BEN-E",
-    "confidence": 0.95,
-    "reasoning": "Found catalog number 59689N and title mentions 'Entities'",
-    "is_first_page": true,
-    "detected_catalog": "59689N"
-}
-```
+**Configuration:**
+- Enable **"AI-Powered Classification"** checkbox
+- Provide API key (same key works for both OCR and classification)
+- Model: `gpt-4o-mini` (cost-effective) or `gpt-4o` (more accurate)
 
 ---
 
-## Supported Form Types
+## ☁️ Azure OpenAI Support
+
+The application supports Azure OpenAI Service for enterprise deployments.
+
+### Configuration
+
+1. Check **"Use Azure OpenAI"** in Advanced Options
+2. Provide:
+   - **Azure Deployment Name**: Your GPT deployment (e.g., `gpt-4o`)
+   - **Azure Endpoint**: Your resource endpoint (e.g., `https://my-resource.openai.azure.com/`)
+   - **Azure API Version**: API version (default: `2024-02-15-preview`)
+   - **API Key**: Your Azure OpenAI API key
+
+### Benefits
+
+- ✅ Enterprise-grade security and compliance
+- ✅ Dedicated capacity with provisioned throughput
+- ✅ Data residency controls
+- ✅ Private network connectivity
+
+---
+
+## 📋 Supported Form Types
 
 | Form Type | Description | Pages | Catalog Number |
 |-----------|-------------|-------|----------------|
-| W-8BEN | Foreign Status of Beneficial Owner (Individuals) | 1 | 25047Z |
-| W-8BEN-E | Status of Beneficial Owner (Entities) | 8 | 59689N |
-| W-8EXP | Foreign Government/Organization | 3 | 115(2) |
-| W-8IMY | Foreign Intermediary | 8 | 25402Q |
-| W-9 | Request for Taxpayer ID | 1 or 6 | 10231X |
-| CERTIFICATE | Various certificates | Variable | N/A |
-| OTHER | Unrecognized documents | Variable | N/A |
+| W-8BEN | Certificate of Foreign Status of Beneficial Owner (Individuals) | 1 | 25047Z |
+| W-8BEN-E | Certificate of Status of Beneficial Owner (Entities) | 8 | 59689N |
+| W-8EXP | Certificate of Foreign Government/Organization | 3 | 115(2) |
+| W-8IMY | Certificate of Foreign Intermediary | 8 | 25402Q |
+| W-9 | Request for Taxpayer Identification Number | 1 or 6 | 10231X |
+| CERTIFICATE | Award certificates, completion certificates | Variable | N/A |
+| OTHER | Unrecognized documents, instructions, cover letters | Variable | N/A |
 
-## Project Structure
+---
+
+## ⚙️ How It Works
+
+### Processing Pipeline
 
 ```
-SPTest/
-├── app.py              # Streamlit web application
-├── DocSplitter.py      # Core PDF splitting logic
-├── requirements.txt    # Python dependencies
-├── README.md          # This file
-├── split_forms/       # Output directory for split PDFs
-└── leagcyFiles/       # Legacy/prototype code (not used)
+┌─────────────────┐
+│  Upload PDF     │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ Extract Pages   │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────────────────┐
+│  Text Extraction (per page) │
+│  ┌─────────────────────┐    │
+│  │ 1. Native PDF Text  │    │
+│  │ 2. LLM Vision OCR   │    │ ← If enabled & needed
+│  │ 3. Traditional OCR  │    │ ← Fallback
+│  └─────────────────────┘    │
+└────────┬────────────────────┘
+         │
+         ▼
+┌─────────────────────────────┐
+│  Document Classification    │
+│  ┌─────────────────────┐    │
+│  │ LLM Classification  │    │ ← If enabled
+│  │ Rule-Based Fallback │    │
+│  └─────────────────────┘    │
+└────────┬────────────────────┘
+         │
+         ▼
+┌─────────────────────────────┐
+│  Page Grouping              │
+│  - Strict page count rules  │
+│  - Form type boundaries     │
+│  - Certificate separation   │
+└────────┬────────────────────┘
+         │
+         ▼
+┌─────────────────┐
+│  Output PDFs    │
+└─────────────────┘
 ```
 
-## How It Works
+### Classification Tiers (Rule-Based Fallback)
 
-1. **Text Extraction**: Extracts text from PDF pages using native PDF text or OCR.
-2. **Form Detection** (4-tier approach):
-   - **Tier 0**: Unique catalog numbers (100% confidence, fuzzy-matched)
-   - **Tier 1**: Full title pattern matching (95% confidence)
-   - **Tier 2**: Form name detection (80% confidence)
-   - **Tier 3**: Fuzzy string matching (60% confidence)
-3. **Page Grouping**: Groups pages by form type using page count rules.
-4. **Output**: Creates separate PDF files for each detected document.
+When LLM classification is disabled, the system uses a 4-tier approach:
 
-## Troubleshooting
+1. **Tier 0**: Unique catalog numbers (100% confidence, fuzzy-matched)
+2. **Tier 1**: Full title pattern matching (95% confidence)
+3. **Tier 2**: Form name detection (80% confidence)
+4. **Tier 3**: Fuzzy string matching (60% confidence)
+
+### Page Grouping Rules
+
+Documents are split based on:
+- **Form type changes**: Different types always split
+- **Page count limits**: W-8BEN-E max 8 pages, forces split
+- **Certificates**: Each certificate is a separate document
+- **Start page detection**: New document if page claims to be "Page 1"
+
+---
+
+## 💰 Cost Estimates
+
+### LLM Vision OCR (GPT-4o)
+- ~$0.01-0.03 per page (image input + text output)
+- 100 pages ≈ $1-3
+
+### LLM Classification (GPT-4o mini)
+- ~$0.00015 per page (text input only)
+- 100 pages ≈ $0.015
+
+### Combined (OCR + Classification)
+- 100 pages ≈ $1-3 (most cost is vision OCR)
+
+**Note:** Prices vary based on image size and text length. Azure OpenAI pricing may differ.
+
+---
+
+## 🛠️ Troubleshooting
 
 ### "No module named 'fitz'"
 ```bash
@@ -225,16 +391,87 @@ pip install PyMuPDF
 ### "Tesseract is not installed"
 Install Tesseract OCR (see Installation step 4).
 
+### "langchain-openai not installed"
+```bash
+pip install langchain-openai
+```
+
+### LLM features not working
+1. Verify API key is correct
+2. Check internet connectivity
+3. For Azure: Verify deployment name and endpoint
+4. Check API quota/limits in your OpenAI/Azure dashboard
+
 ### Low confidence warnings
-- Try a different OCR engine (EasyOCR for poor quality scans)
+- Try **LLM Vision OCR** for better text extraction
+- Try a different traditional OCR engine (EasyOCR for poor quality)
 - Check if the PDF is heavily compressed or skewed
-- Manually review flagged documents
+- Enable LLM classification for better document detection
 
 ### Slow processing
+- Use **RapidOCR** instead of EasyOCR or LLM Vision
 - Enable **Parallel Processing** in Advanced Options
 - Increase **Worker Threads** (if you have multiple CPU cores)
-- Use RapidOCR instead of EasyOCR
+- Disable LLM features for faster rule-based processing
 
-## License
+### LLM OCR produces poor results
+- Ensure PDF pages are not extremely low resolution
+- Try increasing image quality (currently 2x zoom)
+- Some handwritten text may still be challenging
+- Fall back to EasyOCR for heavily degraded documents
+
+---
+
+## 📁 Project Structure
+
+```
+SPTest/
+├── app.py                  # Streamlit web application
+├── DocSplitter.py          # Core PDF splitting logic with LLM support
+├── llm_config.py           # LLM configuration (OpenAI/Azure settings)
+├── requirements.txt        # Python dependencies
+├── README.md              # This file
+├── split_forms/           # Output directory for split PDFs
+└── leagcyFiles/           # Legacy/prototype code (not used)
+```
+
+**Key Files:**
+
+- **`llm_config.py`**: Centralized configuration for all LLM settings
+  - Edit this file to customize OCR prompts, models, zoom levels, etc.
+  - Supports both OpenAI and Azure OpenAI configurations
+  - Create custom configs programmatically for different use cases
+
+- **`DocSplitter.py`**: Main processing logic
+  - Uses configuration from `llm_config.py`
+  - Can be used directly in Python scripts with custom config
+
+- **`app.py`**: Streamlit web interface
+  - Reads configuration from UI or `llm_config.py` defaults
+
+---
+
+## 🔒 Security & Privacy
+
+### Data Handling
+- **Local Processing**: PDFs are processed locally, not uploaded to external servers
+- **LLM API Calls**: Only page text/images are sent to OpenAI/Azure (not entire PDFs)
+- **Temporary Files**: Processing uses temporary directories that are cleaned up
+
+### Best Practices
+- Use Azure OpenAI for enterprise compliance requirements
+- Don't process sensitive documents with external LLM APIs
+- Store API keys securely (use environment variables in production)
+- Review your organization's data policies before enabling LLM features
+
+---
+
+## 📝 License
 
 [Add your license here]
+
+---
+
+## 🤝 Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.

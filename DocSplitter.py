@@ -18,6 +18,9 @@ import re
 from collections import defaultdict
 from thefuzz import fuzz
 
+# Import LLM configuration
+from llm_config import LLMConfig, default_config
+
 # Optional LLM support
 try:
     from openai import OpenAI
@@ -25,6 +28,18 @@ try:
 except ImportError:
     OPENAI_AVAILABLE = False
     OpenAI = None
+
+# LangChain for LLM-based OCR
+try:
+    from langchain_openai import AzureChatOpenAI, ChatOpenAI
+    from langchain_core.messages import HumanMessage
+    import base64
+    LANGCHAIN_AVAILABLE = True
+except ImportError:
+    LANGCHAIN_AVAILABLE = False
+    AzureChatOpenAI = None
+    ChatOpenAI = None
+    HumanMessage = None
 
 
 @dataclass
@@ -171,8 +186,47 @@ CRITICAL:
 - is_first_page = TRUE only for the FIRST page of a multi-page document
 """
     
-    def __init__(self, ocr_engine="tesseract", use_llm=False, api_key=None, api_base=None, llm_model="gpt-4o-mini"):
+    def __init__(self, ocr_engine="tesseract", use_llm=False, api_key=None, api_base=None, llm_model="gpt-4o-mini",
+                 use_llm_ocr=False, azure_deployment=None, azure_endpoint=None, azure_api_version=None,
+                 llm_config: Optional[LLMConfig] = None):
+        """
+        Initialize PDFSplitter.
+
+        Args:
+            ocr_engine: OCR engine to use ("tesseract", "easyocr", "rapidocr", or "llm")
+            use_llm: Enable LLM-based classification (uses text input)
+            use_llm_ocr: Enable LLM-based OCR using vision models (requires LangChain)
+            api_key: API key for OpenAI or Azure
+            api_base: Base URL for OpenAI API (optional)
+            llm_model: Model name for classification (e.g., "gpt-4o-mini")
+            azure_deployment: Azure deployment name for Chat completions (for Azure users)
+            azure_endpoint: Azure endpoint URL (e.g., "https://your-resource.openai.azure.com/")
+            azure_api_version: Azure API version (e.g., "2024-02-15-preview")
+            llm_config: Optional LLMConfig instance for advanced configuration.
+                       If provided, most parameters will be overridden by this config.
+        """
         self.ocr_engine = ocr_engine
+        
+        # Use provided config or create one from parameters
+        if llm_config:
+            self.llm_config = llm_config
+        else:
+            # Create config from parameters for backward compatibility
+            self.llm_config = LLMConfig(
+                api_key=api_key,
+                api_base=api_base,
+                use_azure=bool(azure_deployment and azure_endpoint),
+                azure_deployment=azure_deployment,
+                azure_endpoint=azure_endpoint,
+                azure_api_version=azure_api_version or "2024-02-15-preview",
+                use_llm_ocr=use_llm_ocr,
+                ocr_model="gpt-4o",
+                use_llm_classification=use_llm,
+                classification_model=llm_model
+            )
+        
+        self.use_llm_ocr = use_llm_ocr or self.llm_config.use_llm_ocr
+        self.use_llm = use_llm or self.llm_config.use_llm_classification
 
         if self.ocr_engine == "easyocr":
             try:
@@ -226,31 +280,67 @@ CRITICAL:
         # Pre-compute OCR variants for all unique identifiers (cached for performance)
         self._catalog_variants_cache = {}
         self._build_catalog_variants_cache()
-        
-        # LLM Configuration
-        self.use_llm = use_llm
-        self.llm_model = llm_model
-        self.api_key = api_key
-        self.api_base = api_base
+
+        # LLM Configuration from llm_config
+        self.api_key = self.llm_config.api_key
+        self.api_base = self.llm_config.api_base
+        self.llm_model = self.llm_config.classification_model
         self.client = None
-        
+        self.llm_ocr_client = None
+
         if self.use_llm:
             if not OPENAI_AVAILABLE:
                 print("Warning: openai package not installed. LLM classification disabled.")
                 self.use_llm = False
-            elif not api_key:
+            elif not self.api_key:
                 print("Warning: No API key provided. LLM classification disabled.")
                 self.use_llm = False
             else:
                 try:
-                    if api_base:
-                        self.client = OpenAI(api_key=api_key, base_url=api_base)
+                    if self.api_base:
+                        self.client = OpenAI(api_key=self.api_key, base_url=self.api_base)
                     else:
-                        self.client = OpenAI(api_key=api_key)
-                    print(f"LLM classification enabled using model: {llm_model}")
+                        self.client = OpenAI(api_key=self.api_key)
+                    print(f"LLM classification enabled using model: {self.llm_model}")
                 except Exception as e:
                     print(f"Warning: Failed to initialize OpenAI client: {e}. LLM classification disabled.")
                     self.use_llm = False
+
+        # Initialize LangChain client for LLM-based OCR
+        if self.use_llm_ocr:
+            if not LANGCHAIN_AVAILABLE:
+                print("Warning: langchain-openai not installed. LLM OCR disabled.")
+                self.use_llm_ocr = False
+            elif not self.api_key:
+                print("Warning: No API key provided. LLM OCR disabled.")
+                self.use_llm_ocr = False
+            else:
+                try:
+                    if self.llm_config.is_azure():
+                        # Azure OpenAI
+                        self.llm_ocr_client = AzureChatOpenAI(
+                            azure_deployment=self.llm_config.azure_deployment,
+                            azure_endpoint=self.llm_config.azure_endpoint,
+                            azure_api_version=self.llm_config.azure_api_version,
+                            api_key=self.api_key,
+                            model=self.llm_config.ocr_model,
+                            max_tokens=self.llm_config.ocr_max_tokens,
+                            temperature=self.llm_config.ocr_temperature
+                        )
+                        print(f"LLM OCR enabled using Azure deployment: {self.llm_config.azure_deployment}")
+                    else:
+                        # Standard OpenAI
+                        self.llm_ocr_client = ChatOpenAI(
+                            model=self.llm_config.ocr_model,
+                            api_key=self.api_key,
+                            base_url=self.api_base,
+                            max_tokens=self.llm_config.ocr_max_tokens,
+                            temperature=self.llm_config.ocr_temperature
+                        )
+                        print(f"LLM OCR enabled using model: {self.llm_config.ocr_model}")
+                except Exception as e:
+                    print(f"Warning: Failed to initialize LangChain client: {e}. LLM OCR disabled.")
+                    self.use_llm_ocr = False
     
     def _build_catalog_variants_cache(self):
         """Pre-compute OCR variants for all catalog numbers."""
@@ -528,6 +618,67 @@ CRITICAL:
         """Clean and normalize text for comparison."""
         # Remove extra whitespace and newlines
         return ' '.join(text.replace('\n', ' ').split())
+    
+    def extract_text_with_llm_ocr(self, page, page_num: int) -> Tuple[str, dict]:
+        """
+        Extract text from a page using LLM vision model (GPT-4o or similar).
+        Uses LangChain for OpenAI or Azure OpenAI.
+
+        Args:
+            page: PyMuPDF page object
+            page_num: Page number (0-indexed)
+
+        Returns:
+            Tuple of (extracted_text, metadata_dict)
+        """
+        metadata = {
+            'ocr_used': True,
+            'ocr_method': 'llm_vision',
+            'ocr_engine': 'langchain_openai'
+        }
+
+        if not self.use_llm_ocr or not self.llm_ocr_client:
+            return "", metadata
+
+        try:
+            # Convert page to image using zoom level from config
+            pix = page.get_pixmap(matrix=fitz.Matrix(
+                self.llm_config.ocr_image_zoom,
+                self.llm_config.ocr_image_zoom
+            ))
+            img_bytes = pix.tobytes("png")
+
+            # Encode image to base64
+            import base64
+            base64_image = base64.b64encode(img_bytes).decode('utf-8')
+
+            # Call the LLM with vision
+            if HumanMessage:
+                message = HumanMessage(
+                    content=[
+                        {"type": "text", "text": self.llm_config.ocr_system_prompt},
+                        {"type": "image_url", "image_url": {
+                            "url": f"data:image/png;base64,{base64_image}",
+                            "detail": self.llm_config.ocr_image_detail
+                        }}
+                    ]
+                )
+                response = self.llm_ocr_client.invoke([message])
+                extracted_text = response.content if hasattr(response, 'content') else str(response)
+            else:
+                # Fallback if HumanMessage not available
+                extracted_text = ""
+
+            metadata['ocr_success'] = True
+            metadata['text_length'] = len(extracted_text)
+
+            return self.clean_text(extracted_text), metadata
+
+        except Exception as e:
+            print(f"LLM OCR error on page {page_num}: {type(e).__name__}: {e}")
+            metadata['ocr_error'] = str(e)
+            metadata['ocr_success'] = False
+            return "", metadata
 
     def should_trigger_ocr(self, text: str, page) -> Tuple[bool, dict]:
         """
@@ -574,17 +725,35 @@ CRITICAL:
 
     def extract_text_from_page(self, page) -> Tuple[str, dict]:
         """
-        Extract text from a page using both native text extraction and OCR if needed.
+        Extract text from a page using native text extraction, LLM OCR, or traditional OCR if needed.
+        
+        Priority:
+        1. Native text extraction (if sufficient)
+        2. LLM OCR (if use_llm_ocr is enabled)
+        3. Traditional OCR (Tesseract/EasyOCR/RapidOCR) as fallback
+        
         Returns (text, metadata_dict).
         """
         # Try native text extraction first
         text = page.get_text()
         ocr_metadata = {'ocr_used': False, 'ocr_reason': None}
-        
+
         # Determine if OCR should be triggered
         should_ocr, ocr_info = self.should_trigger_ocr(text, page)
-        
+
         if should_ocr:
+            # If LLM OCR is enabled, use it first
+            if self.use_llm_ocr and self.llm_ocr_client:
+                llm_ocr_text, llm_metadata = self.extract_text_with_llm_ocr(page, page.number)
+                if llm_ocr_text:
+                    ocr_metadata.update(llm_metadata)
+                    ocr_metadata['ocr_reason'] = ocr_info['reason']
+                    return llm_ocr_text, ocr_metadata
+                else:
+                    print(f"Page {page.number}: LLM OCR failed, falling back to traditional OCR")
+                    ocr_metadata['llm_ocr_attempted'] = True
+            
+            # Fall back to traditional OCR
             pix = page.get_pixmap()
             ocr_metadata['ocr_reason'] = ocr_info['reason']
 
@@ -640,7 +809,7 @@ CRITICAL:
                     pil_img = Image.fromarray(processed_img) if not isinstance(processed_img, Image.Image) else processed_img
                     custom_config = r'--oem 3 --psm 6'
                     text = pytesseract.image_to_string(pil_img, config=custom_config)
-                
+
                 ocr_metadata['ocr_used'] = True
                 ocr_metadata['images_found'] = ocr_info.get('has_images', False)
 
@@ -966,7 +1135,7 @@ CRITICAL:
                 page = pdf_document[page_num]
                 analysis = self.analyze_page(page_num, page)
                 analyses.append(analysis)
-        
+
         # Debug print analysis results
         for analysis in analyses:
             print(f"DEBUG: Page {analysis.page_num} -> Type: {analysis.form_type}, "
@@ -1002,18 +1171,21 @@ CRITICAL:
                 elif form_type == "CERTIFICATE" or current_type == "CERTIFICATE":
                     # Each certificate is typically a separate document
                     start_new = True
-                # Same form type - check if we should split
+                # Same form type - check if we should split based on STRICT page count rules
                 elif current_type in self.form_rules:
-                    # Has strict page count rules
+                    # Has strict page count rules - ENFORCE THEM STRICTLY
                     allowed_counts = self.form_rules[current_type]
                     max_count = max(allowed_counts)
-
+                    
+                    # STRICT RULE: If we've reached the exact page count, force split
                     if current_len >= max_count:
-                        # Hit max length, force new doc
+                        # Already have max pages for this form type, MUST start new document
                         start_new = True
+                        print(f"DEBUG: Force split - {current_type} reached max page count ({current_len} >= {max_count})")
                     elif current_len in allowed_counts and is_start_page:
                         # At a valid stopping point AND new page claims to be first
                         start_new = True
+                        print(f"DEBUG: Split at valid count ({current_len}) with is_start_page=True")
                     else:
                         # Continue absorbing pages of same type
                         start_new = False
@@ -1024,6 +1196,7 @@ CRITICAL:
             if start_new:
                 if current_doc is not None:
                     documents.append(current_doc)
+                    print(f"DEBUG: Completed document: {current_doc['type']} #{len([d for d in documents if d['type'] == current_doc['type']])} with {len(current_doc['pages'])} page(s)")
 
                 # Create new document
                 doc_id = len([d for d in documents if d['type'] == form_type]) + 1
@@ -1040,12 +1213,14 @@ CRITICAL:
                     'reasoning': analysis.reasoning,
                     'form_structure_detected': analysis.form_structure_detected
                 }
+                print(f"DEBUG: Starting new document: {form_type} #{doc_id}")
 
             current_doc['pages'].append(page_num)
 
         # Add the last document
         if current_doc is not None:
             documents.append(current_doc)
+            print(f"DEBUG: Completed final document: {current_doc['type']} with {len(current_doc['pages'])} page(s)")
 
         return documents
 
