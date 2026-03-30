@@ -128,7 +128,7 @@ The web interface will open at `http://localhost:8501`.
 
 ### LLM Configuration File (`llm_config.py`)
 
-All LLM settings are centralized in `llm_config.py` for easy customization.
+All LLM settings including **prompts** are centralized in `llm_config.py` for easy customization.
 
 **Quick Start:**
 
@@ -146,8 +146,7 @@ config = create_openai_config(
 config = create_azure_config(
     api_key="your-azure-key-here",
     azure_deployment="gpt-4o",
-    azure_endpoint="https://my-resource.openai.azure.com/",
-    azure_api_version="2024-02-15-preview"
+    azure_endpoint="https://my-resource.openai.azure.com/"
 )
 
 # Option 3: Custom Configuration
@@ -155,34 +154,30 @@ from llm_config import LLMConfig
 
 config = LLMConfig(
     api_key="your-key-here",
-    use_llm_ocr=True,
-    use_llm_classification=True,
     ocr_model="gpt-4o",
-    ocr_image_zoom=2.0,              # Image zoom level (higher = better quality)
-    ocr_max_tokens=2000,             # Max tokens for OCR response
-    ocr_temperature=0.0,             # Keep low for consistency
     classification_model="gpt-4o-mini",
-    verbose=True
+    ocr_image_zoom=2.0  # Higher = better quality OCR
 )
 ```
 
-**Key Configuration Options:**
+**Configuration Options:**
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `api_key` | str | None | OpenAI or Azure API key |
-| `use_azure` | bool | False | Use Azure OpenAI instead of OpenAI |
+| `api_key` | str | None | OpenAI or Azure API key (required) |
 | `azure_deployment` | str | None | Azure deployment name |
 | `azure_endpoint` | str | None | Azure endpoint URL |
 | `azure_api_version` | str | "2024-02-15-preview" | Azure API version |
-| `use_llm_ocr` | bool | False | Enable LLM-based OCR |
 | `ocr_model` | str | "gpt-4o" | Vision model for OCR |
+| `classification_model` | str | "gpt-4o-mini" | Text model for classification |
 | `ocr_image_zoom` | float | 2.0 | Image zoom level (1.0-4.0) |
-| `ocr_image_detail` | str | "high" | Image detail ("low", "high", "auto") |
-| `ocr_max_tokens` | int | 2000 | Max tokens for OCR response |
-| `use_llm_classification` | bool | False | Enable LLM classification |
-| `classification_model` | str | "gpt-4o-mini" | Model for classification |
-| `verbose` | bool | True | Enable verbose logging |
+
+**Prompts Included:**
+- `OCR_SYSTEM_PROMPT` - Prompt for LLM-based OCR text extraction
+- `CLASSIFICATION_SYSTEM_PROMPT` - System prompt for document classification
+- `CLASSIFICATION_USER_TEMPLATE` - User prompt template for classification
+
+Edit these prompts in `llm_config.py` to customize LLM behavior.
 
 **Using Custom Config in Code:**
 
@@ -193,10 +188,7 @@ from llm_config import LLMConfig
 # Create custom configuration
 config = LLMConfig(
     api_key="your-key-here",
-    use_llm_ocr=True,
-    use_llm_classification=True,
-    ocr_image_zoom=3.0,  # Higher quality OCR
-    verbose=True
+    ocr_image_zoom=3.0  # Higher quality OCR
 )
 
 # Initialize splitter with custom config

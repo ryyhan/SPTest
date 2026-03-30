@@ -1,271 +1,190 @@
 """
 LLM Configuration for Smart PDF Splitter
 
-Centralized configuration for LangChain OpenAI and Azure OpenAI clients.
-Modify these settings to customize LLM behavior for OCR and classification.
+Simple configuration for LangChain OpenAI and Azure OpenAI clients.
 """
 
-from typing import Optional, Dict, Any
-from dataclasses import dataclass, field
+from typing import Optional
+from dataclasses import dataclass
 
+
+# ===========================================
+# Prompts
+# ===========================================
+
+OCR_SYSTEM_PROMPT = """You are an expert OCR system. Extract ALL text from this document image with high accuracy.
+
+IMPORTANT:
+- Preserve the exact text content, including form fields, labels, values, and footer text
+- Maintain logical line breaks and structure where appropriate
+- Include catalog numbers, form IDs, and any small print
+- If you see "Page X of Y" or similar, include it
+- Do not add any commentary - return ONLY the extracted text
+
+Extracted text:"""
+
+
+CLASSIFICATION_SYSTEM_PROMPT = """You are an expert document classification assistant specialized in US tax forms and financial documents. Your task is to analyze the COMPLETE text from a PDF page and determine what type of document this page belongs to.
+
+AVAILABLE DOCUMENT TYPES:
+1. W-8BEN: Certificate of Foreign Status of Beneficial Owner (Individuals) - must have form fields
+2. W-8BEN-E: Certificate of Status of Beneficial Owner (Entities) - must have form fields
+3. W-8EXP: Certificate of Foreign Government or Organization - must have form fields
+4. W-8IMY: Certificate of Foreign Intermediary - must have form fields
+5. W-9: Request for Taxpayer Identification Number - must have form fields
+6. CERTIFICATE: Award certificates, completion certificates, certification letters (no form fields)
+7. OTHER: Everything else - instructions, cover letters, tax statements, withholding notifications, supporting documents
+
+CRITICAL CLASSIFICATION RULES:
+1. WITHHOLDING STATEMENTS ARE ALWAYS "OTHER": Any page that is a withholding statement, tax notification, payment advice, or beneficial owner statement should be classified as OTHER, EVEN IF it mentions being "attached to" or "part of" a W-8 form
+2. Forms MUST have fillable fields: A page is ONLY a W-8 form if it has blank lines to fill, checkboxes, signature blocks with "Sign Here" instructions
+3. Prose text = NOT a form: Pages with paragraphs of text, even if titled "Statement" or "Certificate", are NOT tax forms
+4. "Part of" doesn't mean same type: A withholding statement that says "This is part of Form W-8IMY" is STILL classified as OTHER, not W-8IMY
+5. Each page type is a separate document: Withholding statements, forms, and certificates should each be their own document type
+6. Look for form structure: Actual forms have: "☐" checkboxes, "________" fill lines, "Signature" blocks, "Date" fields
+
+EXAMPLES:
+- "Withholding Statement" + mentions W-8IMY + no form fields → OTHER (NOT W-8IMY)
+- "This statement is attached to Form W-8IMY" → OTHER (the statement itself is not the form)
+- "Notification of withholding for W-8BEN" → OTHER (NOT W-8BEN)
+- "Form W-8IMY" + fillable fields + signature → W-8IMY
+- "Beneficial Owner Statement" + prose text → OTHER or CERTIFICATE
+- "We certify..." + no form fields → CERTIFICATE
+- Dense legal text about tax treaties → OTHER (instructions)
+
+You will receive the FULL text from one page. Analyze it holistically and return your classification as JSON.
+
+REMEMBER: When in doubt, classify prose/text-heavy pages as OTHER. Only classify as W-8 forms if the page has actual form fields to fill out."""
+
+
+CLASSIFICATION_USER_TEMPLATE = """Analyze this COMPLETE text from page {page_num} of a PDF and classify what type of document this page is.
+
+FULL PAGE TEXT:
+---
+{text}
+---
+
+Respond with ONLY a valid JSON object in this exact format:
+{{
+    "document_type": "W-8BEN",
+    "confidence": 0.95,
+    "reasoning": "Explain: Does this have form fields (checkboxes, fill lines, signature)? Or is it prose text? If it mentions a form but has no fields, classify as OTHER.",
+    "is_first_page": false,
+    "form_structure_detected": true,
+    "mentions_other_forms": ["W-8BEN-E"] if any, otherwise omit
+}}
+
+document_type must be one of: W-8BEN, W-8BEN-E, W-8EXP, W-8IMY, W-9, CERTIFICATE, OTHER
+confidence should be between 0.0 and 1.0
+
+is_first_page rules (CRITICAL - read carefully):
+- Set to TRUE **ONLY** if this is page 1 of a multi-page document (look for "Page 1 of X" or if it's the form title page)
+- Set to FALSE if this is a continuation page (Page 2+, or if the page says "Part II", "Section B", etc.)
+- Set to FALSE for single-page documents
+- When in doubt, set to FALSE
+
+form_structure_detected should be true ONLY if the page has form fields, checkboxes, signature lines (NOT just prose text)
+
+CRITICAL:
+- Withholding statements = OTHER (even if they say "part of Form W-8...")
+- Tax notifications = OTHER
+- Beneficial owner statements without form fields = OTHER
+- ONLY pages with fillable form fields = W-8 forms
+- is_first_page = TRUE only for the FIRST page of a multi-page document"""
+
+
+# ===========================================
+# Configuration
+# ===========================================
 
 @dataclass
 class LLMConfig:
     """
-    Configuration for LLM-based features (OCR and Classification).
+    Simple configuration for LLM-based OCR and Classification.
     
-    Supports both OpenAI and Azure OpenAI Service.
+    Only essential settings - API credentials and model selection.
     """
     
     # ===========================================
-    # API Configuration
+    # Required: API Credentials
     # ===========================================
     
-    # API Key (required for LLM features)
     api_key: Optional[str] = None
     
-    # API Base URL (optional, for custom endpoints)
-    # Default for OpenAI: https://api.openai.com/v1
-    api_base: Optional[str] = None
-    
     # ===========================================
-    # Azure OpenAI Configuration (optional)
+    # Optional: Azure OpenAI (leave None for standard OpenAI)
     # ===========================================
     
-    # Set to True to use Azure OpenAI instead of OpenAI
-    use_azure: bool = False
-    
-    # Azure deployment name (required for Azure)
-    # Example: "gpt-4o", "gpt-4o-mini"
     azure_deployment: Optional[str] = None
-    
-    # Azure endpoint URL (required for Azure)
-    # Example: "https://my-resource.openai.azure.com/"
     azure_endpoint: Optional[str] = None
-    
-    # Azure API version (required for Azure)
-    # Common versions: "2024-02-15-preview", "2024-03-01-preview"
     azure_api_version: str = "2024-02-15-preview"
     
     # ===========================================
-    # LLM OCR Configuration (Vision Models)
+    # Optional: Model Selection
     # ===========================================
     
-    # Enable LLM-based OCR using vision models
-    use_llm_ocr: bool = False
-    
-    # Model for OCR (vision-capable model required)
-    # Recommended: "gpt-4o" (best quality)
-    # Alternative: "gpt-4-turbo" (older, less accurate)
+    # Model for OCR (vision-capable)
     ocr_model: str = "gpt-4o"
     
-    # Max tokens for OCR response
-    # Higher = more detailed text extraction, but slower and more expensive
-    ocr_max_tokens: int = 2000
-    
-    # Temperature for OCR (keep low for consistency)
-    ocr_temperature: float = 0.0
-    
-    # Image detail level for OCR
-    # Options: "low", "high", "auto"
-    # "high" = better quality but more tokens
-    # "low" = faster and cheaper
-    ocr_image_detail: str = "high"
-    
-    # Image zoom level for OCR (PyMuPDF matrix)
-    # Higher = better quality but larger images
-    # Recommended: 2.0 (2x zoom)
-    ocr_image_zoom: float = 2.0
-    
-    # OCR prompt customization
-    ocr_system_prompt: str = """You are an expert OCR system specialized in document text extraction.
-Your task is to extract ALL text from document images with maximum accuracy.
-
-IMPORTANT GUIDELINES:
-1. Extract every visible word, including:
-   - Form titles and headers
-   - Field labels and values
-   - Footer text and page numbers
-   - Catalog numbers and form IDs
-   - Fine print and disclaimers
-
-2. Preserve structure:
-   - Maintain logical line breaks
-   - Keep related text together
-   - Indicate section breaks clearly
-
-3. Be precise:
-   - Don't add commentary or explanations
-   - Don't skip text that appears unclear
-   - Mark uncertain text with [?] if needed
-
-4. Special attention to:
-   - Catalog numbers (e.g., "25047Z", "59689N")
-   - Form names (e.g., "W-8BEN-E", "Form W-9")
-   - Page indicators (e.g., "Page 1 of 8")
-   - Revision dates (e.g., "Rev. 10-2018")
-
-Return ONLY the extracted text. Do not add any preamble or conclusion."""
-
-    ocr_user_prompt_template: str = """Extract all text from this document image.
-
-{image}
-
-Extracted text:"""
-    
-    # ===========================================
-    # LLM Classification Configuration
-    # ===========================================
-    
-    # Enable LLM-based document classification
-    use_llm_classification: bool = False
-    
-    # Model for classification (text-based)
-    # Recommended: "gpt-4o-mini" (cost-effective)
-    # Alternative: "gpt-4o" (more accurate), "gpt-4-turbo"
+    # Model for document classification (text-based)
     classification_model: str = "gpt-4o-mini"
     
-    # Max tokens for classification response
-    classification_max_tokens: int = 400
-    
-    # Temperature for classification (keep low for consistency)
-    classification_temperature: float = 0.1
-    
-    # Timeout for classification API calls (seconds)
-    classification_timeout: int = 60
-    
     # ===========================================
-    # Retry Configuration
+    # Optional: OCR Quality
     # ===========================================
     
-    # Number of retry attempts for failed API calls
-    max_retries: int = 3
-    
-    # Delay between retries (seconds)
-    retry_delay: float = 1.0
-    
-    # ===========================================
-    # Supported Document Types
-    # ===========================================
-    
-    # List of valid document types for classification
-    valid_document_types: list = field(default_factory=lambda: [
-        "W-8BEN",
-        "W-8BEN-E",
-        "W-8EXP",
-        "W-8IMY",
-        "W-9",
-        "CERTIFICATE",
-        "OTHER"
-    ])
-    
-    # ===========================================
-    # Logging & Debugging
-    # ===========================================
-    
-    # Enable verbose logging
-    verbose: bool = True
-    
-    # Log API requests and responses
-    log_api_calls: bool = False
+    # Image zoom level (1.0 = normal, 2.0 = 2x, etc.)
+    ocr_image_zoom: float = 2.0
     
     # ===========================================
     # Helper Methods
     # ===========================================
     
-    def get_ocr_model(self) -> str:
-        """Get the model name for OCR."""
-        return self.ocr_model
-    
-    def get_classification_model(self) -> str:
-        """Get the model name for classification."""
-        return self.classification_model
-    
     def is_azure(self) -> bool:
         """Check if Azure OpenAI is configured."""
-        return self.use_azure and self.azure_deployment and self.azure_endpoint
+        return bool(self.azure_deployment and self.azure_endpoint)
     
     def validate(self) -> tuple[bool, str]:
         """
         Validate the configuration.
-        
-        Returns:
-            Tuple of (is_valid, error_message)
+        Returns: (is_valid, error_message)
         """
-        if self.use_llm_ocr or self.use_llm_classification:
-            if not self.api_key:
-                return False, "API key is required for LLM features"
-            
-            if self.use_azure:
-                if not self.azure_deployment:
-                    return False, "Azure deployment name is required"
-                if not self.azure_endpoint:
-                    return False, "Azure endpoint is required"
+        if not self.api_key:
+            return False, "API key is required"
+        
+        if self.is_azure() and not self.azure_api_version:
+            return False, "Azure API version is required"
         
         return True, ""
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert configuration to dictionary."""
-        return {
-            'api_key': self.api_key,
-            'api_base': self.api_base,
-            'use_azure': self.use_azure,
-            'azure_deployment': self.azure_deployment,
-            'azure_endpoint': self.azure_endpoint,
-            'azure_api_version': self.azure_api_version,
-            'use_llm_ocr': self.use_llm_ocr,
-            'ocr_model': self.ocr_model,
-            'ocr_max_tokens': self.ocr_max_tokens,
-            'ocr_temperature': self.ocr_temperature,
-            'ocr_image_detail': self.ocr_image_detail,
-            'ocr_image_zoom': self.ocr_image_zoom,
-            'use_llm_classification': self.use_llm_classification,
-            'classification_model': self.classification_model,
-            'classification_max_tokens': self.classification_max_tokens,
-            'classification_temperature': self.classification_temperature,
-            'classification_timeout': self.classification_timeout,
-            'max_retries': self.max_retries,
-            'retry_delay': self.retry_delay,
-            'verbose': self.verbose,
-            'log_api_calls': self.log_api_calls
-        }
 
 
 # ===========================================
-# Default Configuration Instance
-# ===========================================
-
-# Create a default configuration that can be imported and modified
-default_config = LLMConfig()
-
-# ===========================================
-# Quick Configuration Examples
+# Convenience Functions
 # ===========================================
 
 def create_openai_config(
     api_key: str,
     ocr_model: str = "gpt-4o",
     classification_model: str = "gpt-4o-mini",
-    **kwargs
+    ocr_image_zoom: float = 2.0
 ) -> LLMConfig:
     """
-    Create a configuration for OpenAI API.
+    Create configuration for OpenAI.
     
     Args:
         api_key: Your OpenAI API key
-        ocr_model: Model for OCR (vision)
-        classification_model: Model for classification (text)
-        **kwargs: Additional LLMConfig parameters
+        ocr_model: Vision model for OCR (default: gpt-4o)
+        classification_model: Text model for classification (default: gpt-4o-mini)
+        ocr_image_zoom: Image zoom level (default: 2.0)
     
     Returns:
-        Configured LLMConfig instance
+        LLMConfig instance
     """
     return LLMConfig(
         api_key=api_key,
-        use_azure=False,
         ocr_model=ocr_model,
         classification_model=classification_model,
-        **kwargs
+        ocr_image_zoom=ocr_image_zoom
     )
 
 
@@ -275,67 +194,31 @@ def create_azure_config(
     azure_endpoint: str,
     azure_api_version: str = "2024-02-15-preview",
     ocr_model: str = "gpt-4o",
-    classification_model: str = "gpt-4o-mini",
-    **kwargs
+    classification_model: str = "gpt-4o-mini"
 ) -> LLMConfig:
     """
-    Create a configuration for Azure OpenAI Service.
+    Create configuration for Azure OpenAI.
     
     Args:
         api_key: Your Azure OpenAI API key
         azure_deployment: Azure deployment name
         azure_endpoint: Azure endpoint URL
         azure_api_version: Azure API version
-        ocr_model: Model for OCR (vision)
-        classification_model: Model for classification (text)
-        **kwargs: Additional LLMConfig parameters
+        ocr_model: Vision model for OCR
+        classification_model: Text model for classification
     
     Returns:
-        Configured LLMConfig instance
+        LLMConfig instance
     """
     return LLMConfig(
         api_key=api_key,
-        use_azure=True,
         azure_deployment=azure_deployment,
         azure_endpoint=azure_endpoint,
         azure_api_version=azure_api_version,
         ocr_model=ocr_model,
-        classification_model=classification_model,
-        **kwargs
+        classification_model=classification_model
     )
 
 
-# ===========================================
-# Usage Examples
-# ===========================================
-
-if __name__ == "__main__":
-    # Example 1: Basic OpenAI configuration
-    config1 = create_openai_config(
-        api_key="sk-your-openai-key-here"
-    )
-    print("OpenAI Config:", config1.to_dict())
-    
-    # Example 2: Azure OpenAI configuration
-    config2 = create_azure_config(
-        api_key="your-azure-key-here",
-        azure_deployment="gpt-4o",
-        azure_endpoint="https://my-resource.openai.azure.com/"
-    )
-    print("Azure Config:", config2.to_dict())
-    
-    # Example 3: Custom configuration
-    config3 = LLMConfig(
-        api_key="sk-your-key-here",
-        use_llm_ocr=True,
-        use_llm_classification=True,
-        ocr_model="gpt-4o",
-        classification_model="gpt-4o-mini",
-        ocr_image_zoom=2.0,
-        verbose=True
-    )
-    print("Custom Config:", config3.to_dict())
-    
-    # Example 4: Validate configuration
-    is_valid, error = config3.validate()
-    print(f"Valid: {is_valid}, Error: {error}")
+# Default configuration instance
+default_config = LLMConfig()
