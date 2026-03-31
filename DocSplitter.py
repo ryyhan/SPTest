@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -40,6 +41,7 @@ except ImportError:
     AzureChatOpenAI = None
     ChatOpenAI = None
     HumanMessage = None
+    base64 = None
 
 
 @dataclass
@@ -568,7 +570,6 @@ class PDFSplitter:
             img_bytes = pix.tobytes("png")
 
             # Encode image to base64
-            import base64
             base64_image = base64.b64encode(img_bytes).decode('utf-8')
 
             # Call the LLM with vision
