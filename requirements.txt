@@ -1,0 +1,47 @@
+# ===========================================
+# Smart PDF Splitter - Dependencies
+# ===========================================
+
+# Core PDF and OCR dependencies
+PyMuPDF>=1.24.0              # fitz - PDF processing and image conversion
+pytesseract>=0.3.13          # OCR with Tesseract (fallback)
+Pillow>=10.0.0               # Image processing for OCR
+
+# OCR engines (choose based on needs)
+rapidocr-onnxruntime>=1.2.3  # Fastest OCR, recommended default (CPU-optimized)
+# easyocr>=1.7.0             # Better for poor quality scans (optional, uncomment if needed)
+
+# Text matching and fuzzy search
+thefuzz>=0.22.0              # Fuzzy string matching for OCR error tolerance
+python-Levenshtein>=0.27.0   # Required for thefuzz performance
+
+# Image preprocessing (optional but recommended for better OCR)
+opencv-python>=4.8.0         # Image preprocessing for scanned documents
+numpy>=1.24.0                # Required by opencv and OCR engines
+
+# Web application
+streamlit>=1.30.0            # Web UI framework
+
+# ===========================================
+# LLM Support (Optional - for AI features)
+# ===========================================
+# Required for:
+#   1. LLM-based document classification (GPT-4o mini)
+#   2. LLM-based OCR using vision models (GPT-4o)
+#   3. Azure OpenAI Service support
+
+openai>=1.0.0                # OpenAI API client
+langchain>=0.1.0             # LangChain framework for LLM orchestration
+langchain-openai>=0.0.5      # LangChain OpenAI integration (includes Azure support)
+
+# ===========================================
+# System Dependencies (Install Separately)
+# ===========================================
+# Tesseract OCR (Required - fallback OCR engine)
+#   macOS:     brew install tesseract
+#   Ubuntu:    sudo apt-get install tesseract-ocr
+#   Windows:   https://github.com/UB-Mannheim/tesseract/wiki
+#
+# Optional: OpenCV system libraries
+#   macOS:     brew install opencv
+#   Ubuntu:    sudo apt-get install libopencv-dev
