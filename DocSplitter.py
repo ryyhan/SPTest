@@ -229,11 +229,14 @@ class PDFSplitter:
             else:
                 try:
                     # Use OpenAI client with Azure configuration
+                    # Azure OpenAI requires specific base URL format
+                    azure_base_url = f"{self.llm_config.azure_endpoint.rstrip('/')}/openai/deployments/{self.llm_config.azure_deployment}"
                     self.client = OpenAI(
                         api_key=self.api_key,
-                        base_url=self.llm_config.azure_endpoint
+                        base_url=azure_base_url,
+                        default_headers={"api-key": self.api_key}
                     )
-                    print(f"LLM classification enabled using Azure deployment: {self.llm_model}")
+                    print(f"LLM classification enabled using Azure deployment: {self.llm_config.azure_deployment}")
                 except Exception as e:
                     print(f"Warning: Failed to initialize OpenAI client: {e}. LLM classification disabled.")
                     self.use_llm = False
