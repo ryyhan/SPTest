@@ -191,7 +191,7 @@ documents = splitter.split_pdf("input.pdf", "output/")
 
 ## 🤖 AI Features
 
-### 1. LLM Vision OCR (New!)
+### 1. LLM Vision OCR
 
 Extract text from scanned documents using GPT-4o vision models instead of traditional OCR.
 
@@ -199,19 +199,17 @@ Extract text from scanned documents using GPT-4o vision models instead of tradit
 - ✅ Poor quality scans that traditional OCR struggles with
 - ✅ Complex layouts with mixed text and form fields
 - ✅ Maximum accuracy is required
-- ✅ You have access to API keys
 
 **How it works:**
 1. PDF page is converted to high-resolution image (2x zoom)
-2. Image is sent to GPT-4o Vision API
+2. Image is sent to GPT-4o Vision API via Azure OpenAI
 3. LLM extracts all text with context understanding
 4. Falls back to traditional OCR if LLM fails
 
 **Configuration:**
-- Select **"LLM Vision"** as OCR engine
-- Provide Azure OpenAI API key and deployment details
-- Model: `gpt-4o` (recommended for vision)
-- Customize in `llm_config.py`: `ocr_image_zoom`, `ocr_system_prompt`
+- Select **"LLM Vision"** as OCR engine in the dropdown
+- Configure Azure OpenAI in `llm_config.py`
+- Model: `gpt-4o` (vision-capable)
 
 ### 2. LLM Classification
 
@@ -224,18 +222,25 @@ Use GPT-4o mini to intelligently classify document types.
 
 **How it works:**
 1. Text is extracted from each PDF page (via OCR or native)
-2. Full page text is sent to GPT-4o mini
+2. Full page text is sent to GPT-4o mini via Azure OpenAI
 3. LLM analyzes content holistically and returns:
    - Document type (W-8BEN, W-8BEN-E, etc.)
    - Confidence score
    - Reasoning explanation
-   - Whether it's the first page of a multi-page document
 4. Falls back to rule-based detection if LLM fails
 
 **Configuration:**
-- Enable **"AI-Powered Classification"** checkbox
-- Provide Azure OpenAI API key and deployment details
-- Model: `gpt-4o-mini` (cost-effective) or `gpt-4o` (more accurate)
+- Check **"Enable LLM classification"** in Advanced Options
+- Configure Azure OpenAI in `llm_config.py`
+- Model: `gpt-4o-mini` (cost-effective)
+
+---
+
+**💡 Key Difference:**
+- **LLM Vision OCR** = Extracts text from images (replaces Tesseract/EasyOCR)
+- **LLM Classification** = Identifies document type (replaces rule-based detection)
+
+You can use either or both. Both require Azure OpenAI configuration.
 
 ---
 

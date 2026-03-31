@@ -250,8 +250,8 @@ class PDFSplitter:
                     self.llm_ocr_client = AzureChatOpenAI(
                         azure_deployment=self.llm_config.azure_deployment,
                         azure_endpoint=self.llm_config.azure_endpoint,
-                        azure_api_version=self.llm_config.azure_api_version,
                         api_key=self.api_key,
+                        api_version=self.llm_config.azure_api_version,
                         model=self.llm_config.ocr_model,
                         max_tokens=2000,
                         temperature=0.0

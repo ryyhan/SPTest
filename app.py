@@ -29,8 +29,9 @@ def main():
             "RapidOCR (Fastest, excellent accuracy on CPU)",
             "Tesseract (Fast, best for standard forms)",
             "EasyOCR (Better for skewed images/poor quality, but slow)",
-            "LLM Vision (GPT-4o - Most accurate, requires Azure OpenAI)"
-        ]
+            "LLM Vision (GPT-4o - Uses Azure OpenAI for OCR text extraction)"
+        ],
+        help="This determines how text is extracted from scanned/non-text PDFs. LLM Vision uses GPT-4o to read text from images."
     )
 
     # Advanced options expander
@@ -42,14 +43,22 @@ def main():
         st.divider()
 
         # LLM Classification Option
-        st.subheader("🤖 AI-Powered Classification")
+        st.subheader("🤖 AI-Powered Document Classification")
         use_llm = st.checkbox(
-            "Enable LLM classification (higher accuracy, slower)",
+            "Enable LLM classification",
             value=False,
-            help="Use GPT-4o mini to classify pages. More accurate but slower than rule-based detection."
+            help="Uses Azure OpenAI to intelligently classify each page (e.g., W-8BEN, W-8IMY, Certificate). More accurate but slower than rule-based detection."
         )
+        
+        st.info("""
+        **💡 Two LLM features available:**
+        1. **LLM Vision (above)**: Extracts text from scanned documents using GPT-4o Vision
+        2. **AI Classification (this checkbox)**: Identifies document types using GPT-4o mini
+        
+        You can enable either or both. Both require Azure OpenAI configuration in `llm_config.py`.
+        """)
 
-    # LLM OCR Option
+    # LLM OCR Option - triggered by selecting LLM Vision engine
     use_llm_ocr = "LLM Vision" in engine_choice
 
     if "RapidOCR" in engine_choice:
