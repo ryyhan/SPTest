@@ -468,11 +468,10 @@ class PDFSplitter:
                 max_tokens=400,
                 timeout=60  # Longer timeout for large pages
             )
-            
+
             # Parse the response
-            import json
             response_text = response.choices[0].message.content.strip()
-            
+
             # Try to extract JSON from the response
             # Handle cases where LLM adds markdown code blocks or extra text
             if response_text.startswith("```"):
@@ -483,13 +482,13 @@ class PDFSplitter:
                 if lines and lines[-1].startswith("```"):
                     lines = lines[:-1]
                 response_text = "\n".join(lines)
-            
+
             # Find JSON in response (in case there's extra text before/after)
-            json_start = response_text.find("{")
-            json_end = response_text.rfind("}") + 1
-            if json_start >= 0 and json_end > json_start:
-                response_text = response_text[json_start:json_end]
-            
+            start_idx = response_text.find("{")
+            end_idx = response_text.rfind("}") + 1
+            if start_idx >= 0 and end_idx > start_idx:
+                response_text = response_text[start_idx:end_idx]
+
             result = json.loads(response_text)
             
             # Map LLM response to our format
