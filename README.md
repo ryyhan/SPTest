@@ -90,36 +90,38 @@ The web interface will open at `http://localhost:8501`.
 
 ### Steps
 
-1. **Upload PDF**: Upload a PDF file containing multiple mixed documents.
+1. **Configure Azure OpenAI** (one-time setup):
+   
+   Edit `llm_config.py` and add your Azure OpenAI credentials:
+   
+   ```python
+   default_config = create_azure_config(
+       api_key="your-api-key-here",
+       azure_deployment="gpt-4o",
+       azure_endpoint="https://your-resource.openai.azure.com/"
+   )
+   ```
 
-2. **Select OCR Engine**:
-   - **LLM Vision (GPT-4o)** ⭐: Most accurate, best for poor quality scans (requires API key)
+2. **Upload PDF**: Upload a PDF file containing multiple mixed documents.
+
+3. **Select OCR Engine**:
+   - **LLM Vision (GPT-4o)** ⭐: Most accurate, best for poor quality scans
    - **RapidOCR** (recommended): Fastest with excellent accuracy
    - **Tesseract**: Good for clean, standard forms
    - **EasyOCR**: Best for poor quality or skewed images
 
-3. **Advanced Options** (click to expand):
+4. **Advanced Options** (click to expand):
    - **Parallel Processing**: Enable multi-threaded analysis (faster)
    - **Worker Threads**: Adjust number of threads (default: 4)
    - **Debug Mode**: Show confidence scores and matched patterns
-   
    - **🤖 AI-Powered Classification**: Enable LLM-based document classification
-     - Uses GPT-4o mini to classify pages based on content
-     - More accurate but slower than rule-based detection
-   
-   - **Azure OpenAI Configuration** (optional):
-     - Use Azure OpenAI Service instead of OpenAI
-     - Configure deployment name, endpoint, and API version
 
-4. **Provide API Key** (if using LLM features):
-   - Enter your OpenAI API key or Azure OpenAI key
-   - Optional: Custom API base URL for company LLM gateway
+5. **Click "🚀 Start Processing"**: The PDF will be analyzed and split.
 
-5. **View Results**:
+6. **View Results**:
    - Documents are listed with detected form types
    - ⚠️ warnings indicate low confidence or ambiguous detections
    - 🤖 icon indicates pages classified by LLM
-   - 👁️ icon indicates pages processed with LLM Vision OCR
    - Click **Download PDF** to save each document
 
 ---
@@ -133,30 +135,15 @@ All LLM settings including **prompts** are centralized in `llm_config.py` for ea
 **Quick Start:**
 
 ```python
-from llm_config import create_openai_config, create_azure_config
+from llm_config import create_azure_config
 
-# Option 1: OpenAI Configuration
-config = create_openai_config(
-    api_key="sk-your-openai-key-here",
-    ocr_model="gpt-4o",              # Vision model for OCR
-    classification_model="gpt-4o-mini"  # Text model for classification
-)
-
-# Option 2: Azure OpenAI Configuration
+# Azure OpenAI Configuration
 config = create_azure_config(
     api_key="your-azure-key-here",
     azure_deployment="gpt-4o",
-    azure_endpoint="https://my-resource.openai.azure.com/"
-)
-
-# Option 3: Custom Configuration
-from llm_config import LLMConfig
-
-config = LLMConfig(
-    api_key="your-key-here",
-    ocr_model="gpt-4o",
-    classification_model="gpt-4o-mini",
-    ocr_image_zoom=2.0  # Higher = better quality OCR
+    azure_endpoint="https://my-resource.openai.azure.com/",
+    ocr_model="gpt-4o",              # Vision model for OCR
+    classification_model="gpt-4o-mini"  # Text model for classification
 )
 ```
 
@@ -164,9 +151,9 @@ config = LLMConfig(
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `api_key` | str | None | OpenAI or Azure API key (required) |
-| `azure_deployment` | str | None | Azure deployment name |
-| `azure_endpoint` | str | None | Azure endpoint URL |
+| `api_key` | str | None | Azure OpenAI API key (required) |
+| `azure_deployment` | str | None | Azure deployment name (required) |
+| `azure_endpoint` | str | None | Azure endpoint URL (required) |
 | `azure_api_version` | str | "2024-02-15-preview" | Azure API version |
 | `ocr_model` | str | "gpt-4o" | Vision model for OCR |
 | `classification_model` | str | "gpt-4o-mini" | Text model for classification |
@@ -183,19 +170,18 @@ Edit these prompts in `llm_config.py` to customize LLM behavior.
 
 ```python
 from DocSplitter import PDFSplitter
-from llm_config import LLMConfig
+from llm_config import create_azure_config
 
 # Create custom configuration
-config = LLMConfig(
+config = create_azure_config(
     api_key="your-key-here",
+    azure_deployment="gpt-4o",
+    azure_endpoint="https://my-resource.openai.azure.com/",
     ocr_image_zoom=3.0  # Higher quality OCR
 )
 
 # Initialize splitter with custom config
-splitter = PDFSplitter(
-    ocr_engine="llm",
-    llm_config=config
-)
+splitter = PDFSplitter(llm_config=config)
 
 # Process PDF
 documents = splitter.split_pdf("input.pdf", "output/")
@@ -223,9 +209,9 @@ Extract text from scanned documents using GPT-4o vision models instead of tradit
 
 **Configuration:**
 - Select **"LLM Vision"** as OCR engine
-- Provide OpenAI or Azure API key
+- Provide Azure OpenAI API key and deployment details
 - Model: `gpt-4o` (recommended for vision)
-- Customize in `llm_config.py`: `ocr_image_zoom`, `ocr_max_tokens`, `ocr_system_prompt`
+- Customize in `llm_config.py`: `ocr_image_zoom`, `ocr_system_prompt`
 
 ### 2. LLM Classification
 
@@ -235,7 +221,6 @@ Use GPT-4o mini to intelligently classify document types.
 - ✅ Complex or unusual forms
 - ✅ Documents with mixed content
 - ✅ OCR quality is poor (LLM can infer from context)
-- ✅ You have access to a company LLM gateway
 
 **How it works:**
 1. Text is extracted from each PDF page (via OCR or native)
@@ -249,23 +234,22 @@ Use GPT-4o mini to intelligently classify document types.
 
 **Configuration:**
 - Enable **"AI-Powered Classification"** checkbox
-- Provide API key (same key works for both OCR and classification)
+- Provide Azure OpenAI API key and deployment details
 - Model: `gpt-4o-mini` (cost-effective) or `gpt-4o` (more accurate)
 
 ---
 
-## ☁️ Azure OpenAI Support
+## ☁️ Azure OpenAI Service
 
-The application supports Azure OpenAI Service for enterprise deployments.
+This application uses Azure OpenAI Service for all LLM features.
 
-### Configuration
+### Required Information
 
-1. Check **"Use Azure OpenAI"** in Advanced Options
-2. Provide:
-   - **Azure Deployment Name**: Your GPT deployment (e.g., `gpt-4o`)
-   - **Azure Endpoint**: Your resource endpoint (e.g., `https://my-resource.openai.azure.com/`)
-   - **Azure API Version**: API version (default: `2024-02-15-preview`)
-   - **API Key**: Your Azure OpenAI API key
+To use LLM features, you need:
+1. **Azure OpenAI API Key**: From your Azure OpenAI resource
+2. **Deployment Name**: Your GPT model deployment (e.g., `gpt-4o`, `gpt-4o-mini`)
+3. **Endpoint URL**: Your Azure OpenAI endpoint (e.g., `https://my-resource.openai.azure.com/`)
+4. **API Version**: Azure API version (default: `2024-02-15-preview`)
 
 ### Benefits
 

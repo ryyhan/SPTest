@@ -1,7 +1,7 @@
 """
 LLM Configuration for Smart PDF Splitter
 
-Simple configuration for LangChain OpenAI and Azure OpenAI clients.
+Azure OpenAI configuration for LangChain clients.
 """
 
 from typing import Optional
@@ -100,23 +100,17 @@ CRITICAL:
 @dataclass
 class LLMConfig:
     """
-    Simple configuration for LLM-based OCR and Classification.
-    
-    Only essential settings - API credentials and model selection.
+    Azure OpenAI configuration for LLM-based OCR and Classification.
     """
     
     # ===========================================
-    # Required: API Credentials
+    # Required: Azure OpenAI Credentials
     # ===========================================
     
-    api_key: Optional[str] = None
+    api_key: str
     
-    # ===========================================
-    # Optional: Azure OpenAI (leave None for standard OpenAI)
-    # ===========================================
-    
-    azure_deployment: Optional[str] = None
-    azure_endpoint: Optional[str] = None
+    azure_deployment: str
+    azure_endpoint: str
     azure_api_version: str = "2024-02-15-preview"
     
     # ===========================================
@@ -140,10 +134,6 @@ class LLMConfig:
     # Helper Methods
     # ===========================================
     
-    def is_azure(self) -> bool:
-        """Check if Azure OpenAI is configured."""
-        return bool(self.azure_deployment and self.azure_endpoint)
-    
     def validate(self) -> tuple[bool, str]:
         """
         Validate the configuration.
@@ -152,41 +142,18 @@ class LLMConfig:
         if not self.api_key:
             return False, "API key is required"
         
-        if self.is_azure() and not self.azure_api_version:
-            return False, "Azure API version is required"
+        if not self.azure_deployment:
+            return False, "Azure deployment name is required"
+        
+        if not self.azure_endpoint:
+            return False, "Azure endpoint is required"
         
         return True, ""
 
 
 # ===========================================
-# Convenience Functions
+# Convenience Function
 # ===========================================
-
-def create_openai_config(
-    api_key: str,
-    ocr_model: str = "gpt-4o",
-    classification_model: str = "gpt-4o-mini",
-    ocr_image_zoom: float = 2.0
-) -> LLMConfig:
-    """
-    Create configuration for OpenAI.
-    
-    Args:
-        api_key: Your OpenAI API key
-        ocr_model: Vision model for OCR (default: gpt-4o)
-        classification_model: Text model for classification (default: gpt-4o-mini)
-        ocr_image_zoom: Image zoom level (default: 2.0)
-    
-    Returns:
-        LLMConfig instance
-    """
-    return LLMConfig(
-        api_key=api_key,
-        ocr_model=ocr_model,
-        classification_model=classification_model,
-        ocr_image_zoom=ocr_image_zoom
-    )
-
 
 def create_azure_config(
     api_key: str,
@@ -194,7 +161,8 @@ def create_azure_config(
     azure_endpoint: str,
     azure_api_version: str = "2024-02-15-preview",
     ocr_model: str = "gpt-4o",
-    classification_model: str = "gpt-4o-mini"
+    classification_model: str = "gpt-4o-mini",
+    ocr_image_zoom: float = 2.0
 ) -> LLMConfig:
     """
     Create configuration for Azure OpenAI.
@@ -206,6 +174,7 @@ def create_azure_config(
         azure_api_version: Azure API version
         ocr_model: Vision model for OCR
         classification_model: Text model for classification
+        ocr_image_zoom: Image zoom level
     
     Returns:
         LLMConfig instance
@@ -216,9 +185,23 @@ def create_azure_config(
         azure_endpoint=azure_endpoint,
         azure_api_version=azure_api_version,
         ocr_model=ocr_model,
-        classification_model=classification_model
+        classification_model=classification_model,
+        ocr_image_zoom=ocr_image_zoom
     )
 
 
-# Default configuration instance
-default_config = LLMConfig()
+# ===========================================
+# Default Configuration (EDIT THIS!)
+# ===========================================
+
+# Configure your Azure OpenAI credentials here
+# This configuration is used by the UI automatically
+default_config = create_azure_config(
+    api_key="",  # ← Add your Azure OpenAI API key here
+    azure_deployment="",  # ← Add your deployment name here (e.g., "gpt-4o")
+    azure_endpoint="",  # ← Add your endpoint here (e.g., "https://your-resource.openai.azure.com/")
+    azure_api_version="2024-02-15-preview",
+    ocr_model="gpt-4o",
+    classification_model="gpt-4o-mini",
+    ocr_image_zoom=2.0
+)

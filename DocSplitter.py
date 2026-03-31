@@ -119,7 +119,7 @@ class PDFSplitter:
 
     # Note: LLM prompts moved to llm_config.py for easy customization
 
-    def __init__(self, ocr_engine="tesseract", use_llm=False, api_key=None, api_base=None, llm_model="gpt-4o-mini",
+    def __init__(self, ocr_engine="tesseract", use_llm=False, api_key=None, llm_model="gpt-4o-mini",
                  use_llm_ocr=False, azure_deployment=None, azure_endpoint=None, azure_api_version=None,
                  llm_config: Optional[LLMConfig] = None):
         """
@@ -129,14 +129,13 @@ class PDFSplitter:
             ocr_engine: OCR engine to use ("tesseract", "easyocr", "rapidocr", or "llm")
             use_llm: Enable LLM-based classification (uses text input)
             use_llm_ocr: Enable LLM-based OCR using vision models (requires LangChain)
-            api_key: API key for OpenAI or Azure
-            api_base: Base URL for OpenAI API (optional)
+            api_key: Azure OpenAI API key
             llm_model: Model name for classification (e.g., "gpt-4o-mini")
-            azure_deployment: Azure deployment name for Chat completions (for Azure users)
+            azure_deployment: Azure deployment name
             azure_endpoint: Azure endpoint URL (e.g., "https://your-resource.openai.azure.com/")
             azure_api_version: Azure API version (e.g., "2024-02-15-preview")
             llm_config: Optional LLMConfig instance for advanced configuration.
-                       If provided, most parameters will be overridden by this config.
+                       If provided, all parameters will be overridden by this config.
         """
         self.ocr_engine = ocr_engine
         
@@ -147,19 +146,16 @@ class PDFSplitter:
             # Create config from parameters for backward compatibility
             self.llm_config = LLMConfig(
                 api_key=api_key,
-                api_base=api_base,
-                use_azure=bool(azure_deployment and azure_endpoint),
                 azure_deployment=azure_deployment,
                 azure_endpoint=azure_endpoint,
                 azure_api_version=azure_api_version or "2024-02-15-preview",
-                use_llm_ocr=use_llm_ocr,
                 ocr_model="gpt-4o",
-                use_llm_classification=use_llm,
-                classification_model=llm_model
+                classification_model=llm_model,
+                ocr_image_zoom=2.0
             )
         
-        self.use_llm_ocr = use_llm_ocr or self.llm_config.use_llm_ocr
-        self.use_llm = use_llm or self.llm_config.use_llm_classification
+        self.use_llm_ocr = use_llm_ocr
+        self.use_llm = use_llm
 
         if self.ocr_engine == "easyocr":
             try:
@@ -216,7 +212,7 @@ class PDFSplitter:
 
         # LLM Configuration from llm_config
         self.api_key = self.llm_config.api_key
-        self.api_base = self.llm_config.api_base
+        self.api_base = None  # Not used with Azure
         self.llm_model = self.llm_config.classification_model
         self.client = None
         self.llm_ocr_client = None
@@ -230,16 +226,17 @@ class PDFSplitter:
                 self.use_llm = False
             else:
                 try:
-                    if self.api_base:
-                        self.client = OpenAI(api_key=self.api_key, base_url=self.api_base)
-                    else:
-                        self.client = OpenAI(api_key=self.api_key)
-                    print(f"LLM classification enabled using model: {self.llm_model}")
+                    # Use OpenAI client with Azure configuration
+                    self.client = OpenAI(
+                        api_key=self.api_key,
+                        base_url=self.llm_config.azure_endpoint
+                    )
+                    print(f"LLM classification enabled using Azure deployment: {self.llm_model}")
                 except Exception as e:
                     print(f"Warning: Failed to initialize OpenAI client: {e}. LLM classification disabled.")
                     self.use_llm = False
 
-        # Initialize LangChain client for LLM-based OCR
+        # Initialize LangChain client for LLM-based OCR (Azure only)
         if self.use_llm_ocr:
             if not LANGCHAIN_AVAILABLE:
                 print("Warning: langchain-openai not installed. LLM OCR disabled.")
@@ -249,28 +246,17 @@ class PDFSplitter:
                 self.use_llm_ocr = False
             else:
                 try:
-                    if self.llm_config.is_azure():
-                        # Azure OpenAI
-                        self.llm_ocr_client = AzureChatOpenAI(
-                            azure_deployment=self.llm_config.azure_deployment,
-                            azure_endpoint=self.llm_config.azure_endpoint,
-                            azure_api_version=self.llm_config.azure_api_version,
-                            api_key=self.api_key,
-                            model=self.llm_config.ocr_model,
-                            max_tokens=self.llm_config.ocr_max_tokens,
-                            temperature=self.llm_config.ocr_temperature
-                        )
-                        print(f"LLM OCR enabled using Azure deployment: {self.llm_config.azure_deployment}")
-                    else:
-                        # Standard OpenAI
-                        self.llm_ocr_client = ChatOpenAI(
-                            model=self.llm_config.ocr_model,
-                            api_key=self.api_key,
-                            base_url=self.api_base,
-                            max_tokens=self.llm_config.ocr_max_tokens,
-                            temperature=self.llm_config.ocr_temperature
-                        )
-                        print(f"LLM OCR enabled using model: {self.llm_config.ocr_model}")
+                    # Azure OpenAI
+                    self.llm_ocr_client = AzureChatOpenAI(
+                        azure_deployment=self.llm_config.azure_deployment,
+                        azure_endpoint=self.llm_config.azure_endpoint,
+                        azure_api_version=self.llm_config.azure_api_version,
+                        api_key=self.api_key,
+                        model=self.llm_config.ocr_model,
+                        max_tokens=2000,
+                        temperature=0.0
+                    )
+                    print(f"LLM OCR enabled using Azure deployment: {self.llm_config.azure_deployment}")
                 except Exception as e:
                     print(f"Warning: Failed to initialize LangChain client: {e}. LLM OCR disabled.")
                     self.use_llm_ocr = False
