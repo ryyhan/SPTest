@@ -468,7 +468,6 @@ class PDFSplitter:
                     }
                 ],
                 temperature=0.1,  # Low temperature for consistency
-                max_tokens=400,
                 timeout=60  # Longer timeout for large pages
             )
 
