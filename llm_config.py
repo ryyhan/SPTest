@@ -33,20 +33,21 @@ AVAILABLE DOCUMENT TYPES:
 4. W-8IMY: Certificate of Foreign Intermediary - must have form fields
 5. W-9: Request for Taxpayer Identification Number - must have form fields
 6. CERTIFICATE: Award certificates, completion certificates, certification letters (no form fields)
-7. OTHER: Everything else - instructions, cover letters, tax statements, withholding notifications, supporting documents
+7. WITHHOLDING STATEMENT: Any withholding statement, tax notification, or payment advice
+8. OTHER: Everything else - instructions, cover letters, supporting documents
 
 CRITICAL CLASSIFICATION RULES:
-1. WITHHOLDING STATEMENTS ARE ALWAYS "OTHER": Any page that is a withholding statement, tax notification, payment advice, or beneficial owner statement should be classified as OTHER, EVEN IF it mentions being "attached to" or "part of" a W-8 form
+1. WITHHOLDING STATEMENTS: Any page that is a withholding statement, tax notification, or payment advice should be classified as WITHHOLDING STATEMENT, EVEN IF it mentions being "attached to" or "part of" a W-8 form
 2. Forms MUST have fillable fields: A page is ONLY a W-8 form if it has blank lines to fill, checkboxes, signature blocks with "Sign Here" instructions
-3. Prose text = NOT a form: Pages with paragraphs of text, even if titled "Statement" or "Certificate", are NOT tax forms
-4. "Part of" doesn't mean same type: A withholding statement that says "This is part of Form W-8IMY" is STILL classified as OTHER, not W-8IMY
+3. Prose text = NOT a form: Pages with paragraphs of text, even if titled "Statement" or "Certificate", are NOT tax forms (unless they are a WITHHOLDING STATEMENT)
+4. "Part of" doesn't mean same type: A withholding statement that says "This is part of Form W-8IMY" should be classified as WITHHOLDING STATEMENT, not W-8IMY
 5. Each page type is a separate document: Withholding statements, forms, and certificates should each be their own document type
 6. Look for form structure: Actual forms have: "☐" checkboxes, "________" fill lines, "Signature" blocks, "Date" fields
 
 EXAMPLES:
-- "Withholding Statement" + mentions W-8IMY + no form fields → OTHER (NOT W-8IMY)
+- "Withholding Statement" + mentions W-8IMY + no form fields → WITHHOLDING STATEMENT (NOT W-8IMY)
 - "This statement is attached to Form W-8IMY" → OTHER (the statement itself is not the form)
-- "Notification of withholding for W-8BEN" → OTHER (NOT W-8BEN)
+- "Notification of withholding for W-8BEN" → WITHHOLDING STATEMENT (NOT W-8BEN)
 - "Form W-8IMY" + fillable fields + signature → W-8IMY
 - "Beneficial Owner Statement" + prose text → OTHER or CERTIFICATE
 - "We certify..." + no form fields → CERTIFICATE
@@ -74,7 +75,7 @@ Respond with ONLY a valid JSON object in this exact format:
     "mentions_other_forms": ["W-8BEN-E"] if any, otherwise omit
 }}
 
-document_type must be one of: W-8BEN, W-8BEN-E, W-8EXP, W-8IMY, W-9, CERTIFICATE, OTHER
+document_type must be one of: W-8BEN, W-8BEN-E, W-8EXP, W-8IMY, W-9, CERTIFICATE, WITHHOLDING STATEMENT, OTHER
 confidence should be between 0.0 and 1.0
 
 is_first_page rules (CRITICAL - read carefully):
@@ -86,8 +87,8 @@ is_first_page rules (CRITICAL - read carefully):
 form_structure_detected should be true ONLY if the page has form fields, checkboxes, signature lines (NOT just prose text)
 
 CRITICAL:
-- Withholding statements = OTHER (even if they say "part of Form W-8...")
-- Tax notifications = OTHER
+- Withholding statements = WITHHOLDING STATEMENT (even if they say "part of Form W-8...")
+- Tax notifications = WITHHOLDING STATEMENT
 - Beneficial owner statements without form fields = OTHER
 - ONLY pages with fillable form fields = W-8 forms
 - is_first_page = TRUE only for the FIRST page of a multi-page document"""
