@@ -33,21 +33,22 @@ AVAILABLE DOCUMENT TYPES:
 4. W-8IMY: Certificate of Foreign Intermediary - must have form fields
 5. W-9: Request for Taxpayer Identification Number - must have form fields
 6. CERTIFICATE: Award certificates, completion certificates, certification letters (no form fields)
-7. WITHHOLDING STATEMENT: Any withholding statement, tax notification, or payment advice
-8. OTHER: Everything else - instructions, cover letters, supporting documents
+7. WITHHOLDING STATEMENT: **Only** documents explicitly serving as a Withholding Statement (containing specific withholding allocations/breakdowns for payees).
+8. OTHER: Everything else - instructions, cover letters, supporting documents, generic tax notifications, payment advices, general correspondence.
 
 CRITICAL CLASSIFICATION RULES:
-1. WITHHOLDING STATEMENTS: Any page that is a withholding statement, tax notification, or payment advice should be classified as WITHHOLDING STATEMENT, EVEN IF it mentions being "attached to" or "part of" a W-8 form
+1. STRICT WITHHOLDING STATEMENTS: ONLY classify a page as WITHHOLDING STATEMENT if it acts as the actual withholding breakdown/allocation document. General tax instructions, general manuals, generic tax notifications, and payment advices that merely *mention* withholding should be classified as OTHER.
 2. Forms MUST have fillable fields: A page is ONLY a W-8 form if it has blank lines to fill, checkboxes, signature blocks with "Sign Here" instructions
-3. Prose text = NOT a form: Pages with paragraphs of text, even if titled "Statement" or "Certificate", are NOT tax forms (unless they are a WITHHOLDING STATEMENT)
-4. "Part of" doesn't mean same type: A withholding statement that says "This is part of Form W-8IMY" should be classified as WITHHOLDING STATEMENT, not W-8IMY
+3. Prose text = NOT a form: Pages with paragraphs of text, even if titled "Statement" or "Certificate", are NOT tax forms (unless they are a true WITHHOLDING STATEMENT)
+4. "Part of" doesn't mean same type: A true withholding statement that says "This is part of Form W-8IMY" should be classified as WITHHOLDING STATEMENT, not W-8IMY
 5. Each page type is a separate document: Withholding statements, forms, and certificates should each be their own document type
 6. Look for form structure: Actual forms have: "☐" checkboxes, "________" fill lines, "Signature" blocks, "Date" fields
 
 EXAMPLES:
-- "Withholding Statement" + mentions W-8IMY + no form fields → WITHHOLDING STATEMENT (NOT W-8IMY)
+- "Withholding Statement" + mentions W-8IMY + has allocation breakdowns → WITHHOLDING STATEMENT 
 - "This statement is attached to Form W-8IMY" → OTHER (the statement itself is not the form)
-- "Notification of withholding for W-8BEN" → WITHHOLDING STATEMENT (NOT W-8BEN)
+- "Notification of withholding for W-8BEN" → OTHER (generic notification, not a statement)
+- Payment Advice displaying taxes paid → OTHER
 - "Form W-8IMY" + fillable fields + signature → W-8IMY
 - "Beneficial Owner Statement" + prose text → OTHER or CERTIFICATE
 - "We certify..." + no form fields → CERTIFICATE
@@ -86,8 +87,9 @@ is_first_page rules (CRITICAL - read carefully):
 form_structure_detected should be true ONLY if the page has form fields, checkboxes, signature lines (NOT just prose text)
 
 CRITICAL:
-- Withholding statements = WITHHOLDING STATEMENT (even if they say "part of Form W-8...")
-- Tax notifications = WITHHOLDING STATEMENT
+- Withholding statements = WITHHOLDING STATEMENT (only if it is the actual allocation statement)
+- Generic tax notifications and payment advices = OTHER
+- Instructions / manuals mentioning "withholding" = OTHER
 - Beneficial owner statements without form fields = OTHER
 - ONLY pages with fillable form fields = W-8 forms
 - is_first_page = TRUE if it is a single-page document OR the first page of a multi-page document"""

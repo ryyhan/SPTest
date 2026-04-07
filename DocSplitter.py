@@ -468,7 +468,7 @@ class PDFSplitter:
                         "content": user_prompt
                     }
                 ],
-                temperature=0.1,  # Low temperature for consistency
+                temperature=0.0,  # Zero temperature for deterministic consistency
                 timeout=60  # Longer timeout for large pages
             )
 
@@ -620,30 +620,10 @@ class PDFSplitter:
         except Exception:
             pass
         
-        text_length = len(text.strip())
-        
-        # Rule 1: Very little text found - likely scanned
-        if text_length < self.OCR_TEXT_LENGTH_THRESHOLD:
-            if metadata['has_images']:
-                metadata['reason'] = 'low_text_with_images'
-            else:
-                metadata['reason'] = 'low_text_no_images'
-            return True, metadata
-        
-        # Rule 2: Text exists but page has images - might be form with signature/image
-        # Only trigger if text is relatively low (< 300 chars) AND has images
-        if text_length < 300 and metadata['has_images']:
-            metadata['reason'] = 'moderate_text_with_images'
-            return True, metadata
-        
-        # Rule 3: Check for "scanned" artifacts (e.g., text appears as single long line)
-        lines = text.split('\n')
-        if len(lines) == 1 and len(text) > 500:
-            # Single long line might indicate poor PDF text extraction
-            metadata['reason'] = 'single_line_text'
-            return True, metadata
-        
-        return False, metadata
+        # We are intentionally forcing OCR on EVERY page to bypass phantom/corrupted native text layers.
+        # This guarantees that the LLM Vision model (or other selected OCR engine) always processes the page.
+        metadata['reason'] = 'forced_ocr_every_page'
+        return True, metadata
 
     def extract_text_from_page(self, page) -> Tuple[str, dict]:
         """
