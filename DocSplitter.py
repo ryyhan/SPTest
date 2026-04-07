@@ -184,7 +184,8 @@ class PDFSplitter:
             "W-8BEN-E": "Certificate of Status of Beneficial Owner",
             "W-8EXP": "Certificate of Foreign Government",
             "W-8IMY": "Certificate of Foreign Intermediary",
-            "W-9": "Request for Taxpayer Identification Number"
+            "W-9": "Request for Taxpayer Identification Number",
+            "WITHHOLDING STATEMENT": "Withholding Statement"
         }
 
         # Unique catalog numbers and keywords for disambiguation
@@ -502,7 +503,7 @@ class PDFSplitter:
             mentions_other_forms = result.get("mentions_other_forms", [])
             
             # Validate document type
-            valid_types = ["W-8BEN", "W-8BEN-E", "W-8EXP", "W-8IMY", "W-9", "CERTIFICATE", "OTHER"]
+            valid_types = ["W-8BEN", "W-8BEN-E", "W-8EXP", "W-8IMY", "W-9", "CERTIFICATE", "WITHHOLDING STATEMENT", "OTHER"]
             if document_type not in valid_types:
                 print(f"Warning: LLM returned invalid document_type '{document_type}', defaulting to OTHER")
                 document_type = "OTHER"
@@ -751,7 +752,8 @@ class PDFSplitter:
             "W-8BEN-E": r'certificate.*?status.*?beneficial\s*owner.*?entities',
             "W-8EXP": r'certificate.*?foreign\s*government',
             "W-8IMY": r'certificate.*?foreign\s*intermediary',
-            "W-9": r'request.*?taxpayer\s*identification\s*number'
+            "W-9": r'request.*?taxpayer\s*identification\s*number',
+            "WITHHOLDING STATEMENT": r'withholding\s*statement'
         }
 
         # Sort by length of form key to check specific forms first (e.g. W-8BEN-E before W-8BEN)
@@ -800,7 +802,7 @@ class PDFSplitter:
         # Helper to build return value
         def build_result(matched_type, is_start, confidence, patterns, is_ambiguous=False, ambiguous=None):
             # Use unique ID to override if found with good confidence
-            if forced_form_type and matched_type not in ["OTHER", "CERTIFICATE"] and best_catalog_confidence >= 70:
+            if forced_form_type and matched_type not in ["OTHER", "CERTIFICATE", "WITHHOLDING STATEMENT"] and best_catalog_confidence >= 70:
                 final_type = forced_form_type
                 if final_type != matched_type:
                     print(f"DEBUG: Overriding matched type '{matched_type}' with forced type '{final_type}' based on catalog match (confidence: {best_catalog_confidence}).")
@@ -1164,6 +1166,8 @@ class PDFSplitter:
                 return f"certificate_{doc['id']}_{cert_name[:50]}.pdf"
         elif doc['type'] == "OTHER":
             return f"other_document_{doc['id']}.pdf"
+        elif doc['type'] == "WITHHOLDING STATEMENT":
+            return f"withholding_statement_{doc['id']}.pdf"
         else:
             return f"{doc['type'].lower()}_{doc['id']}.pdf"
 
