@@ -79,9 +79,8 @@ document_type must be one of: W-8BEN, W-8BEN-E, W-8EXP, W-8IMY, W-9, CERTIFICATE
 confidence should be between 0.0 and 1.0
 
 is_first_page rules (CRITICAL - read carefully):
-- Set to TRUE **ONLY** if this is page 1 of a multi-page document (look for "Page 1 of X" or if it's the form title page)
+- Set to TRUE if this is a single-page document OR the first page of a multi-page document (look for "Page 1 of X", form title, etc.)
 - Set to FALSE if this is a continuation page (Page 2+, or if the page says "Part II", "Section B", etc.)
-- Set to FALSE for single-page documents
 - When in doubt, set to FALSE
 
 form_structure_detected should be true ONLY if the page has form fields, checkboxes, signature lines (NOT just prose text)
@@ -91,7 +90,7 @@ CRITICAL:
 - Tax notifications = WITHHOLDING STATEMENT
 - Beneficial owner statements without form fields = OTHER
 - ONLY pages with fillable form fields = W-8 forms
-- is_first_page = TRUE only for the FIRST page of a multi-page document"""
+- is_first_page = TRUE if it is a single-page document OR the first page of a multi-page document"""
 
 
 # ===========================================
