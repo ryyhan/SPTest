@@ -1063,6 +1063,9 @@ class PDFSplitter:
 
         documents = []
         current_doc = None
+        # Page budget: tracks how many more pages are expected for the current document.
+        # -1 means "unknown / no budget set" (e.g. for OTHER / WITHHOLDING STATEMENT)
+        current_budget = -1
 
         for analysis in analyses:
             form_type = analysis.form_type
@@ -1077,37 +1080,41 @@ class PDFSplitter:
                 current_type = current_doc['type']
                 current_len = len(current_doc['pages'])
 
-                # Different form type always starts a new document
-                if form_type != current_type:
+                # -------------------------------------------------------
+                # KEY RULE: If we have an active page budget (i.e. we are
+                # mid-way through a known-length form), absorb this page
+                # unconditionally — regardless of what the LLM said about
+                # its type.  The LLM often labels interior instruction pages
+                # as OTHER even though they are physically part of the form.
+                # The pre-verified guarantee means these pages MUST belong
+                # to the current document until the budget is exhausted.
+                # -------------------------------------------------------
+                if current_budget > 0:
+                    start_new = False
+                    print(f"DEBUG: Page {page_num} absorbed into {current_type} (budget remaining: {current_budget})")
+
+                # Different form type and no active budget → start new doc
+                elif form_type != current_type:
                     start_new = True
-                # Same type but different category (form vs OTHER vs CERTIFICATE)
+
+                # Same type / same category checks
                 elif form_type == "OTHER" or current_type == "OTHER":
-                    # OTHER documents: Start new if content is different
-                    # For now, be conservative and group consecutive OTHER pages
                     start_new = False
                 elif form_type == "CERTIFICATE" or current_type == "CERTIFICATE":
-                    # Each certificate is typically a separate document
                     start_new = True
-                # Same form type - check if we should split based on STRICT page count rules
                 elif current_type in self.form_rules:
-                    # Has strict page count rules - ENFORCE THEM STRICTLY
                     allowed_counts = self.form_rules[current_type]
                     max_count = max(allowed_counts)
-                    
-                    # STRICT RULE: If we've reached the exact page count, force split
+
                     if current_len >= max_count:
-                        # Already have max pages for this form type, MUST start new document
                         start_new = True
                         print(f"DEBUG: Force split - {current_type} reached max page count ({current_len} >= {max_count})")
                     elif current_len in allowed_counts and is_start_page:
-                        # At a valid stopping point AND new page claims to be first
                         start_new = True
                         print(f"DEBUG: Split at valid count ({current_len}) with is_start_page=True")
                     else:
-                        # Continue absorbing pages of same type
                         start_new = False
                 else:
-                    # No strict rules, continue grouping same type
                     start_new = False
 
             if start_new:
@@ -1130,14 +1137,49 @@ class PDFSplitter:
                     'reasoning': analysis.reasoning,
                     'form_structure_detected': analysis.form_structure_detected
                 }
-                print(f"DEBUG: Starting new document: {form_type} #{doc_id}")
+
+                # Set the page budget for this new document.
+                # For forms with known page counts, we lock in the budget based on
+                # is_first_page. If the LLM says this is a first page, we don't yet
+                # know whether it's the 1-page or 6-page variant of W-9, so we start
+                # with -1 (dynamic). The budget will be locked in on page 2 if a
+                # continuation page is absorbed (meaning it must be the max variant).
+                # For forms with only ONE allowed count, set it immediately.
+                if form_type in self.form_rules:
+                    allowed_counts = self.form_rules[form_type]
+                    if len(allowed_counts) == 1:
+                        # Single allowed length (e.g. W-8BEN=1, W-8IMY=8) — lock immediately
+                        current_budget = allowed_counts[0]
+                    else:
+                        # Multiple allowed lengths (e.g. W-9=[1,6]) — start undecided
+                        current_budget = -1
+                else:
+                    current_budget = -1  # No rule → no budget
+
+                print(f"DEBUG: Starting new document: {form_type} #{doc_id} (initial budget: {current_budget})")
 
             current_doc['pages'].append(page_num)
-            
+
+            # Decrement the budget now that we've consumed one page.
+            if current_budget > 0:
+                current_budget -= 1
+                print(f"DEBUG: Page {page_num} consumed. Budget now: {current_budget}")
+            elif current_budget == -1 and form_type in self.form_rules:
+                # Budget is undecided. Check if we just absorbed a CONTINUATION page
+                # (is_first_page=False) — this locks us into the max allowed count.
+                if not is_start_page and len(current_doc['pages']) == 2:
+                    max_count = max(self.form_rules[form_type])
+                    remaining = max_count - len(current_doc['pages'])
+                    current_budget = remaining
+                    print(f"DEBUG: Continuation page detected for {form_type}. Locking budget to {max_count} pages. Remaining: {current_budget}")
+                elif is_start_page and len(current_doc['pages']) == 1:
+                    # First page seen, could be 1-page variant — do nothing yet
+                    pass
+
             # Update dynamic confidence - Always take the minimum confidence across all pages
             if analysis.confidence < current_doc['confidence']:
                 current_doc['confidence'] = analysis.confidence
-            
+
             # Update dynamic ambiguity - Any ambiguous page makes the document ambiguous
             if analysis.is_ambiguous:
                 current_doc['is_ambiguous'] = True
