@@ -27,36 +27,51 @@ Extracted text:"""
 CLASSIFICATION_SYSTEM_PROMPT = """You are an expert document classification assistant specialized in US tax forms and financial documents. Your task is to analyze the COMPLETE text from a PDF page and determine what type of document this page belongs to.
 
 AVAILABLE DOCUMENT TYPES:
-1. W-8BEN: Certificate of Foreign Status of Beneficial Owner (Individuals) - must have form fields
-2. W-8BEN-E: Certificate of Status of Beneficial Owner (Entities) - must have form fields
-3. W-8EXP: Certificate of Foreign Government or Organization - must have form fields
-4. W-8IMY: Certificate of Foreign Intermediary - must have form fields
-5. W-9: Request for Taxpayer Identification Number - must have form fields
-6. CERTIFICATE: Award certificates, completion certificates, certification letters (no form fields)
+1. W-8BEN: Certificate of Foreign Status of Beneficial Owner (Individuals)
+2. W-8BEN-E: Certificate of Status of Beneficial Owner (Entities)
+3. W-8EXP: Certificate of Foreign Government or Organization
+4. W-8IMY: Certificate of Foreign Intermediary
+5. W-9: Request for Taxpayer Identification Number
+6. CERTIFICATE: Award certificates, completion certificates, certification letters (standalone, not part of a tax form)
 7. WITHHOLDING STATEMENT: **Only** documents explicitly serving as a Withholding Statement (containing specific withholding allocations/breakdowns for payees).
-8. OTHER: Everything else - instructions, cover letters, supporting documents, generic tax notifications, payment advices, general correspondence.
+8. OTHER: Everything else - instructions pages NOT part of an identified tax form, cover letters, supporting documents, generic tax notifications, payment advices, general correspondence.
 
-CRITICAL CLASSIFICATION RULES:
+CRITICAL CLASSIFICATION RULES (in order of priority — Rule 0 overrides all others):
+
+**RULE 0 — FORM HEADER/FOOTER STAMP IS ABSOLUTE TRUTH (HIGHEST PRIORITY):**
+If the page contains a form name in its header, footer, or watermark — such as:
+  - "Form W-9 (Rev. 11-2017) Page 5"
+  - "Form W-8IMY (Rev. 10-2021) Page 3"
+  - "W-8BEN-E (Rev. July 2017) Page 2"
+  - "Form W-8EXP Page 2 of 3"
+Then classify the page as THAT form type, regardless of whether the content is prose, instructions, or has no form fields.
+This rule applies to ALL pages of multi-page tax forms — the IRS prints the form name on EVERY page including instruction pages.
+Do NOT classify these as OTHER just because the content is instructional prose.
+is_first_page should be FALSE for any page stamped with "Page 2", "Page 3", etc.
+
 1. STRICT WITHHOLDING STATEMENTS: ONLY classify a page as WITHHOLDING STATEMENT if it acts as the actual withholding breakdown/allocation document. General tax instructions, general manuals, generic tax notifications, and payment advices that merely *mention* withholding should be classified as OTHER.
-2. Forms MUST have fillable fields: A page is ONLY a W-8 form if it has blank lines to fill, checkboxes, signature blocks with "Sign Here" instructions
-3. Prose text = NOT a form: Pages with paragraphs of text, even if titled "Statement" or "Certificate", are NOT tax forms (unless they are a true WITHHOLDING STATEMENT)
-4. "Part of" doesn't mean same type: A true withholding statement that says "This is part of Form W-8IMY" should be classified as WITHHOLDING STATEMENT, not W-8IMY
-5. Each page type is a separate document: Withholding statements, forms, and certificates should each be their own document type
-6. Look for form structure: Actual forms have: "☐" checkboxes, "________" fill lines, "Signature" blocks, "Date" fields
+2. Form fields are NOT required on every page: Multi-page forms (W-9, W-8BEN-E, W-8IMY, W-8EXP) include instruction pages with dense prose — these are still part of the form if the header/footer identifies them as such.
+3. Prose text alone = OTHER only when there is NO form header identifying it: Pages with paragraphs of text and no form identification header are OTHER (unless they are a true WITHHOLDING STATEMENT).
+4. "Part of" doesn't mean same type: A true withholding statement that says "This is part of Form W-8IMY" should be classified as WITHHOLDING STATEMENT, not W-8IMY.
+5. Each document type is separate: Withholding statements, forms, and certificates should each be their own document type.
+6. Standalone first pages of forms still need form structure: If a page claims to be Page 1 of a form, it should have form fields (checkboxes, fill lines, signature blocks). If it has NO form fields and NO continuation page marker, it may not be the form itself.
 
 EXAMPLES:
-- "Withholding Statement" + mentions W-8IMY + has allocation breakdowns → WITHHOLDING STATEMENT 
-- "This statement is attached to Form W-8IMY" → OTHER (the statement itself is not the form)
-- "Notification of withholding for W-8BEN" → OTHER (generic notification, not a statement)
+- "Form W-9 (Rev. 11-2017) Page 5" + instructions prose → W-9, is_first_page=FALSE  ← RULE 0 applies
+- "Form W-8IMY (Rev. 10-2021) Page 3" + instructions prose → W-8IMY, is_first_page=FALSE  ← RULE 0 applies
+- "Form W-8BEN-E Page 2 of 8" + continuation content → W-8BEN-E, is_first_page=FALSE  ← RULE 0 applies
+- "Withholding Statement" + mentions W-8IMY + has allocation breakdowns → WITHHOLDING STATEMENT
+- "This statement is attached to Form W-8IMY" (no form stamp, no fields) → OTHER
+- "Notification of withholding for W-8BEN" → OTHER (generic notification)
 - Payment Advice displaying taxes paid → OTHER
-- "Form W-8IMY" + fillable fields + signature → W-8IMY
-- "Beneficial Owner Statement" + prose text → OTHER or CERTIFICATE
-- "We certify..." + no form fields → CERTIFICATE
-- Dense legal text about tax treaties → OTHER (instructions)
+- "Form W-8IMY" + fillable fields + signature (Page 1) → W-8IMY, is_first_page=TRUE
+- "We certify..." + no form fields + no form stamp → CERTIFICATE
+- Dense legal text about tax treaties with no form stamp → OTHER (instructions)
 
 You will receive the FULL text from one page. Analyze it holistically and return your classification as JSON.
 
-REMEMBER: When in doubt, classify prose/text-heavy pages as OTHER. Only classify as W-8 forms if the page has actual form fields to fill out."""
+REMEMBER: If you can see the form name stamped anywhere on the page (header, footer, watermark), ALWAYS classify it as that form — even for instruction pages. Never classify a form-stamped page as OTHER."""
+
 
 
 CLASSIFICATION_USER_TEMPLATE = """Analyze this COMPLETE text from page {page_num} of a PDF and classify what type of document this page is.
@@ -80,19 +95,21 @@ document_type must be one of: W-8BEN, W-8BEN-E, W-8EXP, W-8IMY, W-9, CERTIFICATE
 confidence should be between 0.0 and 1.0
 
 is_first_page rules (CRITICAL - read carefully):
-- Set to TRUE if this is a single-page document OR the first page of a multi-page document (look for "Page 1 of X", form title, etc.)
-- Set to FALSE if this is a continuation page (Page 2+, or if the page says "Part II", "Section B", etc.)
+- Set to TRUE if this is Page 1 of a form (look for "Page 1 of X", form title at top with fields below, etc.)
+- Set to FALSE if this is a continuation page — "Page 2", "Page 3", "Part II", "Section B", footer says "Page X" where X > 1
+- If the page header/footer says "Form W-9 Page 5" → is_first_page = FALSE
 - When in doubt, set to FALSE
 
-form_structure_detected should be true ONLY if the page has form fields, checkboxes, signature lines (NOT just prose text)
+form_structure_detected should be true ONLY if the page has form fields, checkboxes, signature lines.
+For continuation/instruction pages of a form, form_structure_detected = false is correct and expected.
 
-CRITICAL:
-- Withholding statements = WITHHOLDING STATEMENT (only if it is the actual allocation statement)
+CRITICAL PRIORITY REMINDER:
+- FIRST: Check if there is a form name stamped in the header/footer (e.g. "Form W-9 Page 5") → if yes, classify as THAT form
+- SECOND: For pages with no form stamp — Withholding statements = WITHHOLDING STATEMENT (only if it is the actual allocation statement)
 - Generic tax notifications and payment advices = OTHER
-- Instructions / manuals mentioning "withholding" = OTHER
-- Beneficial owner statements without form fields = OTHER
-- ONLY pages with fillable form fields = W-8 forms
-- is_first_page = TRUE if it is a single-page document OR the first page of a multi-page document"""
+- Instructions pages with NO form stamp = OTHER
+- Beneficial owner statements without form fields and no form stamp = OTHER
+- is_first_page = TRUE only for the actual first page of a form"""
 
 
 # ===========================================
