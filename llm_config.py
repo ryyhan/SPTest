@@ -205,5 +205,5 @@ default_config = create_azure_config(
     azure_api_version="2024-02-15-preview",
     ocr_model="gpt-4o",
     classification_model="gpt-4o-mini",
-    ocr_image_zoom=2.0
+    ocr_image_zoom=3.0
 )

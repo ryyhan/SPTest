@@ -259,7 +259,7 @@ class PDFSplitter:
                         api_key=self.api_key,
                         api_version=self.llm_config.azure_api_version,
                         model=self.llm_config.ocr_model,
-                        max_tokens=2000,
+                        max_tokens=None,
                         temperature=0.0
                     )
                     print(f"LLM OCR enabled using Azure deployment: {self.llm_config.azure_deployment}")
@@ -502,6 +502,12 @@ class PDFSplitter:
             form_structure_detected = result.get("form_structure_detected", False)
             mentions_other_forms = result.get("mentions_other_forms", [])
             
+            # Ensure mentions_other_forms is strictly a list (Fix for JSON drift)
+            if isinstance(mentions_other_forms, str):
+                mentions_other_forms = [mentions_other_forms]
+            elif not isinstance(mentions_other_forms, list):
+                mentions_other_forms = []
+            
             # Validate document type
             valid_types = ["W-8BEN", "W-8BEN-E", "W-8EXP", "W-8IMY", "W-9", "CERTIFICATE", "WITHHOLDING STATEMENT", "OTHER"]
             if document_type not in valid_types:
@@ -661,16 +667,11 @@ class PDFSplitter:
 
             try:
                 if cv2 is not None and numpy is not None:
-                    # 1. Convert PyMuPDF pixmap to numpy array
-                    img_array = numpy.frombuffer(pix.samples, dtype=numpy.uint8).reshape(pix.height, pix.width, pix.n)
+                    # 1. Convert PyMuPDF pixmap to PNG bytes directly, then securely decode into grayscale matrix
+                    img_array = numpy.frombuffer(pix.tobytes("png"), dtype=numpy.uint8)
+                    gray = cv2.imdecode(img_array, cv2.IMREAD_GRAYSCALE)
 
-                    # 2. Convert to Grayscale
-                    if pix.n >= 3:
-                         gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
-                    else:
-                         gray = img_array
-
-                    # 3. Apply Otsu's thresholding for Tesseract only
+                    # 2. Apply Otsu's thresholding for Tesseract only
                     if self.ocr_engine in ["easyocr", "rapidocr"]:
                          processed_img = gray
                     else:
@@ -983,15 +984,28 @@ class PDFSplitter:
                 form_structure_detected=False
             )
 
-    def analyze_pages_parallel(self, pdf_document, max_workers: int = 4) -> List[PageAnalysis]:
+    def _analyze_page_from_path(self, path: str, page_num: int) -> PageAnalysis:
+        """Open document locally in thread and analyze a single page (PyMuPDF thread-safety fix)."""
+        doc = fitz.open(path)
+        try:
+            page = doc[page_num]
+            return self.analyze_page(page_num, page)
+        finally:
+            doc.close()
+
+    def analyze_pages_parallel(self, pdf_document, input_path: str = None, max_workers: int = 4) -> List[PageAnalysis]:
         """Analyze all pages in parallel using ThreadPoolExecutor."""
         analyses = []
+        
+        # PyMuPDF requires each thread to have its own Document instance
+        path_to_open = input_path or pdf_document.name
+        total_pages = len(pdf_document)
         
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             # Submit all page analysis tasks
             future_to_page = {
-                executor.submit(self.analyze_page, page_num, pdf_document[page_num]): page_num
-                for page_num in range(len(pdf_document))
+                executor.submit(self._analyze_page_from_path, path_to_open, page_num): page_num
+                for page_num in range(total_pages)
             }
             
             # Collect results as they complete (may not be in order)
@@ -1025,12 +1039,12 @@ class PDFSplitter:
         
         return analyses
 
-    def group_pages(self, pdf_document, use_parallel: bool = True, max_workers: int = 4) -> List[Dict]:
+    def group_pages(self, pdf_document, input_path: str = None, use_parallel: bool = True, max_workers: int = 4) -> List[Dict]:
         """Group pages into separate documents strictly by physical page count."""
         # Analyze all pages (parallel or sequential)
         if use_parallel:
             print(f"Analyzing {len(pdf_document)} pages in parallel with {max_workers} workers...")
-            analyses = self.analyze_pages_parallel(pdf_document, max_workers)
+            analyses = self.analyze_pages_parallel(pdf_document, input_path=input_path, max_workers=max_workers)
         else:
             print(f"Analyzing {len(pdf_document)} pages sequentially...")
             analyses = []
@@ -1119,6 +1133,16 @@ class PDFSplitter:
                 print(f"DEBUG: Starting new document: {form_type} #{doc_id}")
 
             current_doc['pages'].append(page_num)
+            
+            # Update dynamic confidence - Always take the minimum confidence across all pages
+            if analysis.confidence < current_doc['confidence']:
+                current_doc['confidence'] = analysis.confidence
+            
+            # Update dynamic ambiguity - Any ambiguous page makes the document ambiguous
+            if analysis.is_ambiguous:
+                current_doc['is_ambiguous'] = True
+                if analysis.ambiguous_forms:
+                    current_doc['ambiguous_forms'].extend([f for f in analysis.ambiguous_forms if f not in current_doc['ambiguous_forms']])
 
         # Add the last document
         if current_doc is not None:
@@ -1170,7 +1194,7 @@ class PDFSplitter:
         pdf_document = fitz.open(input_path)
 
         # Group pages into separate documents
-        documents = self.group_pages(pdf_document, use_parallel=use_parallel, max_workers=max_workers)
+        documents = self.group_pages(pdf_document, input_path=input_path, use_parallel=use_parallel, max_workers=max_workers)
 
         # Create separate PDFs for each document
         for doc in documents:
