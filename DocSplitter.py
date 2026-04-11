@@ -1,7 +1,9 @@
 import os
 import sys
 import json
-from typing import List, Dict, Tuple, Optional
+import time
+import random
+from typing import List, Dict, Tuple, Optional, Callable, Any
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import fitz
@@ -455,21 +457,30 @@ class PDFSplitter:
                 text=text
             )
 
-            # Call the LLM
-            response = self.client.chat.completions.create(
-                model=self.llm_model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": CLASSIFICATION_SYSTEM_PROMPT
-                    },
-                    {
-                        "role": "user",
-                        "content": user_prompt
-                    }
-                ],
-                temperature=0.0,  # Zero temperature for deterministic consistency
-                timeout=60  # Longer timeout for large pages
+            # Call the LLM with retry logic
+            def _do_classify():
+                return self.client.chat.completions.create(
+                    model=self.llm_model,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": CLASSIFICATION_SYSTEM_PROMPT
+                        },
+                        {
+                            "role": "user",
+                            "content": user_prompt
+                        }
+                    ],
+                    temperature=0.0,  # Zero temperature for deterministic consistency
+                    timeout=60  # Longer timeout for large pages
+                )
+
+            response = self._llm_call_with_retry(
+                _do_classify,
+                label=f"classification page {page_num + 1}",
+                max_retries=3,
+                base_delay=2.0,
+                max_delay=30.0
             )
 
             # Parse the response
@@ -537,16 +548,115 @@ class PDFSplitter:
             }
             
         except json.JSONDecodeError as e:
-            print(f"LLM response parsing error: {e}. Response: {response_text[:200]}...")
+            # Model returned malformed JSON — not a transient error, skip retry
+            print(f"[Classification] JSON parse error on page {page_num + 1}: {e}. "
+                  f"Raw response: {response_text[:200]}...")
             return None
         except Exception as e:
-            print(f"LLM classification error: {type(e).__name__}: {e}")
+            # All retries exhausted (retry helper already logged each attempt)
+            print(f"[Classification] Failed permanently on page {page_num + 1}: {type(e).__name__}: {e}")
             return None
 
     def clean_text(self, text: str) -> str:
         """Clean and normalize text for comparison."""
         # Remove extra whitespace and newlines
         return ' '.join(text.replace('\n', ' ').split())
+
+    def _llm_call_with_retry(self, call_fn: Callable[[], Any], label: str,
+                              max_retries: int = 3,
+                              base_delay: float = 2.0,
+                              max_delay: float = 30.0) -> Any:
+        """
+        Execute an LLM API call with robust exponential backoff and jitter.
+
+        Retries on transient errors:
+          - HTTP 429 (rate limit / quota)
+          - HTTP 5xx (server errors)
+          - Timeout / connection errors
+
+        Does NOT retry on:
+          - HTTP 400 / 401 / 403 (bad request / auth — retrying won't help)
+          - json.JSONDecodeError (model returned garbage — let caller handle)
+
+        Args:
+            call_fn:     Zero-argument callable that executes the actual API call.
+            label:       Human-readable label for log messages (e.g. "classification page 3").
+            max_retries: Maximum number of retry attempts after the first failure.
+            base_delay:  Base delay in seconds before the first retry.
+            max_delay:   Maximum allowed delay between retries.
+
+        Returns:
+            The return value of call_fn on success.
+
+        Raises:
+            The last exception if all retries are exhausted.
+        """
+        # Error status codes that are worth retrying
+        RETRIABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+        # Error status codes that are definitely NOT worth retrying
+        NON_RETRIABLE_STATUS_CODES = {400, 401, 403, 404}
+
+        last_exception = None
+
+        for attempt in range(max_retries + 1):  # attempt 0 = first try
+            try:
+                return call_fn()
+
+            except json.JSONDecodeError:
+                # Model returned malformed JSON — no point retrying the same call
+                raise
+
+            except Exception as e:
+                last_exception = e
+                error_name = type(e).__name__
+
+                # Try to extract HTTP status code from the exception
+                status_code = None
+                if hasattr(e, 'status_code'):
+                    status_code = e.status_code
+                elif hasattr(e, 'response') and hasattr(e.response, 'status_code'):
+                    status_code = e.response.status_code
+
+                # Check for non-retriable status codes immediately
+                if status_code in NON_RETRIABLE_STATUS_CODES:
+                    print(f"[LLM Retry] {label} — Non-retriable error {status_code} ({error_name}). Aborting.")
+                    raise
+
+                # If we've used all retries, give up
+                if attempt >= max_retries:
+                    print(f"[LLM Retry] {label} — All {max_retries} retries exhausted. Last error: {error_name}: {e}")
+                    raise
+
+                # Determine if this is a known retriable error
+                is_retriable = (
+                    status_code in RETRIABLE_STATUS_CODES
+                    or status_code is None  # Unknown errors (timeout, connection reset) → retry
+                )
+
+                if not is_retriable:
+                    print(f"[LLM Retry] {label} — Non-retriable error {status_code} ({error_name}). Aborting.")
+                    raise
+
+                # Compute exponential backoff with full jitter
+                # Formula: random(0, min(max_delay, base_delay * 2^attempt))
+                cap = min(max_delay, base_delay * (2 ** attempt))
+                delay = random.uniform(0.5, cap)
+
+                # If the API returned a Retry-After header, honour it
+                retry_after = getattr(e, 'retry_after', None) or (
+                    getattr(getattr(e, 'response', None), 'headers', {}) or {}
+                ).get('Retry-After')
+                if retry_after:
+                    try:
+                        delay = max(delay, float(retry_after))
+                    except (ValueError, TypeError):
+                        pass
+
+                print(f"[LLM Retry] {label} — Attempt {attempt + 1}/{max_retries} failed "
+                      f"({error_name}: {e}). Retrying in {delay:.1f}s...")
+                time.sleep(delay)
+
+        raise last_exception  # Should never reach here but satisfies type checkers
     
     def extract_text_with_llm_ocr(self, page, page_num: int) -> Tuple[str, dict]:
         """
@@ -580,7 +690,7 @@ class PDFSplitter:
             # Encode image to base64
             base64_image = base64.b64encode(img_bytes).decode('utf-8')
 
-            # Call the LLM with vision
+            # Call the LLM Vision with retry logic
             if HumanMessage:
                 message = HumanMessage(
                     content=[
@@ -591,7 +701,17 @@ class PDFSplitter:
                         }}
                     ]
                 )
-                response = self.llm_ocr_client.invoke([message])
+
+                def _do_ocr_call():
+                    return self.llm_ocr_client.invoke([message])
+
+                response = self._llm_call_with_retry(
+                    _do_ocr_call,
+                    label=f"vision OCR page {page_num + 1}",
+                    max_retries=3,
+                    base_delay=2.0,
+                    max_delay=30.0
+                )
                 extracted_text = response.content if hasattr(response, 'content') else str(response)
             else:
                 # Fallback if HumanMessage not available
@@ -603,7 +723,8 @@ class PDFSplitter:
             return self.clean_text(extracted_text), metadata
 
         except Exception as e:
-            print(f"LLM OCR error on page {page_num}: {type(e).__name__}: {e}")
+            # All retries exhausted (retry helper already logged each attempt)
+            print(f"[Vision OCR] Failed permanently on page {page_num + 1}: {type(e).__name__}: {e}")
             metadata['ocr_error'] = str(e)
             metadata['ocr_success'] = False
             return "", metadata
