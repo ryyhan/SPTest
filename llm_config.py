@@ -34,7 +34,8 @@ AVAILABLE DOCUMENT TYPES:
 5. W-9: Request for Taxpayer Identification Number
 6. CERTIFICATE: Award certificates, completion certificates, certification letters (standalone, not part of a tax form)
 7. WITHHOLDING STATEMENT: **Only** documents explicitly serving as a Withholding Statement (containing specific withholding allocations/breakdowns for payees).
-8. OTHER: Everything else - instructions pages NOT part of an identified tax form, cover letters, supporting documents, generic tax notifications, payment advices, general correspondence.
+8. DOCUSIGN: A DocuSign Certificate of Completion / Envelope Summary. Identifiable by: DocuSign logo/branding, an Envelope ID (long UUID), a list of signers with timestamps and IP addresses, event audit trail (Sent → Viewed → Signed → Completed), and a digital fingerprint/document hash. This is an auto-generated audit document, NOT a tax form.
+9. OTHER: Everything else - instructions pages NOT part of an identified tax form, cover letters, supporting documents, generic tax notifications, payment advices, general correspondence.
 
 CRITICAL CLASSIFICATION RULES (in order of priority — Rule 0 overrides all others):
 
@@ -67,6 +68,8 @@ EXAMPLES:
 - "Form W-8IMY" + fillable fields + signature (Page 1) → W-8IMY, is_first_page=TRUE
 - "We certify..." + no form fields + no form stamp → CERTIFICATE
 - Dense legal text about tax treaties with no form stamp → OTHER (instructions)
+- Page containing "Certificate of Completion", DocuSign logo, Envelope ID (UUID), signer audit trail with timestamps and IP addresses, digital fingerprint → DOCUSIGN
+- Page with "Envelope ID: abc123-...", "Status: Completed", "Sent"/"Viewed"/"Signed" event log → DOCUSIGN
 
 You will receive the FULL text from one page. Analyze it holistically and return your classification as JSON.
 
@@ -91,7 +94,7 @@ Respond with ONLY a valid JSON object in this exact format:
     "mentions_other_forms": ["W-8BEN-E"] if any, otherwise omit
 }}
 
-document_type must be one of: W-8BEN, W-8BEN-E, W-8EXP, W-8IMY, W-9, CERTIFICATE, WITHHOLDING STATEMENT, OTHER
+document_type must be one of: W-8BEN, W-8BEN-E, W-8EXP, W-8IMY, W-9, CERTIFICATE, WITHHOLDING STATEMENT, DOCUSIGN, OTHER
 confidence should be between 0.0 and 1.0
 
 is_first_page rules (CRITICAL - read carefully):

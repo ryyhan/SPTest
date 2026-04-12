@@ -520,7 +520,8 @@ class PDFSplitter:
                 mentions_other_forms = []
             
             # Validate document type
-            valid_types = ["W-8BEN", "W-8BEN-E", "W-8EXP", "W-8IMY", "W-9", "CERTIFICATE", "WITHHOLDING STATEMENT", "OTHER"]
+            valid_types = ["W-8BEN", "W-8BEN-E", "W-8EXP", "W-8IMY", "W-9",
+                           "CERTIFICATE", "WITHHOLDING STATEMENT", "DOCUSIGN", "OTHER"]
             if document_type not in valid_types:
                 print(f"Warning: LLM returned invalid document_type '{document_type}', defaulting to OTHER")
                 document_type = "OTHER"
@@ -1187,6 +1188,11 @@ class PDFSplitter:
         # Page budget: tracks how many more pages are expected for the current document.
         # -1 means "unknown / no budget set" (e.g. for OTHER / WITHHOLDING STATEMENT)
         current_budget = -1
+        # Flag: a DocuSign certificate was just absorbed into the current form.
+        # The very next page after a DocuSign MUST start a new document.
+        docusign_just_absorbed = False
+        # Form types that can have a DocuSign certificate appended to them
+        DOCUSIGN_ELIGIBLE_TYPES = set(self.form_rules.keys()) | {"WITHHOLDING STATEMENT"}
 
         for analysis in analyses:
             form_type = analysis.form_type
@@ -1195,11 +1201,38 @@ class PDFSplitter:
 
             start_new = False
 
-            if current_doc is None:
+            # -------------------------------------------------------
+            # DOCUSIGN GATE: if a DocuSign was just absorbed, the page
+            # after it MUST begin a fresh document unconditionally.
+            # -------------------------------------------------------
+            if docusign_just_absorbed:
+                start_new = True
+                docusign_just_absorbed = False
+                print(f"DEBUG: Page {page_num} starts new doc (follows DocuSign certificate)")
+
+            elif current_doc is None:
                 start_new = True
             else:
                 current_type = current_doc['type']
                 current_len = len(current_doc['pages'])
+
+                # -------------------------------------------------------
+                # DOCUSIGN ABSORPTION: A DocuSign Certificate of Completion
+                # always physically follows the form it belongs to.
+                # When we encounter a DOCUSIGN page, absorb it into the
+                # current document (regardless of budget state) and set
+                # the flag so the page after it starts a new document.
+                # DocuSign pages do NOT count against the form's page budget.
+                # -------------------------------------------------------
+                if form_type == "DOCUSIGN":
+                    if current_type in DOCUSIGN_ELIGIBLE_TYPES:
+                        start_new = False
+                        docusign_just_absorbed = True
+                        print(f"DEBUG: Page {page_num} is DocuSign certificate — absorbing into {current_type} document")
+                    else:
+                        # DocuSign after OTHER/CERTIFICATE — treat as standalone OTHER
+                        start_new = True
+                        print(f"DEBUG: Page {page_num} is DocuSign but current doc is {current_type} — starting new")
 
                 # -------------------------------------------------------
                 # KEY RULE: If we have an active page budget (i.e. we are
@@ -1210,7 +1243,7 @@ class PDFSplitter:
                 # The pre-verified guarantee means these pages MUST belong
                 # to the current document until the budget is exhausted.
                 # -------------------------------------------------------
-                if current_budget > 0:
+                elif current_budget > 0:
                     start_new = False
                     print(f"DEBUG: Page {page_num} absorbed into {current_type} (budget remaining: {current_budget})")
 
@@ -1282,7 +1315,10 @@ class PDFSplitter:
             current_doc['pages'].append(page_num)
 
             # Decrement the budget now that we've consumed one page.
-            if current_budget > 0:
+            # DocuSign pages are NOT counted against the form budget.
+            if form_type == "DOCUSIGN":
+                pass  # DocuSign never affects the budget
+            elif current_budget > 0:
                 current_budget -= 1
                 print(f"DEBUG: Page {page_num} consumed. Budget now: {current_budget}")
             elif current_budget == -1 and form_type in self.form_rules:
@@ -1318,25 +1354,25 @@ class PDFSplitter:
         """Generate appropriate filename for the document."""
         if doc['type'] == "CERTIFICATE":
             # Extract a meaningful name from the certificate text
-            # Find first instance of "certificate" and take surrounding words
             text = doc['text'].lower()
             cert_idx = text.find("certificate")
             if cert_idx != -1:
-                # Take up to 5 words before and after "certificate"
                 words = text.split()
                 cert_word_idx = next(i for i, word in enumerate(words) if "certificate" in word.lower())
                 start_idx = max(0, cert_word_idx - 5)
                 end_idx = min(len(words), cert_word_idx + 6)
                 cert_name = "_".join(words[start_idx:end_idx])
-                # Clean the filename
                 cert_name = re.sub(r'[^\w\-_.]', '_', cert_name)
                 return f"certificate_{doc['id']}_{cert_name[:50]}.pdf"
         elif doc['type'] == "OTHER":
             return f"other_document_{doc['id']}.pdf"
         elif doc['type'] == "WITHHOLDING STATEMENT":
             return f"withholding_statement_{doc['id']}.pdf"
+        elif doc['type'] == "DOCUSIGN":
+            # Standalone DocuSign (rare — only if it appeared without a preceding form)
+            return f"docusign_certificate_{doc['id']}.pdf"
         else:
-            return f"{doc['type'].lower()}_{doc['id']}.pdf"
+            return f"{doc['type'].lower().replace(' ', '_')}_{doc['id']}.pdf"
 
     def split_pdf(self, input_path: str, output_dir: str, use_parallel: bool = True, max_workers: int = 4) -> List[Dict]:
         """
